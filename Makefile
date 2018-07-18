@@ -1,16 +1,23 @@
 G++ = g++
 FLAGS = -std=c++11 -O3 -mavx -mavx2
+MKDIR = mkdir -p
 
-all: sketch
+all: bin/sketch bin/sketch_avx
 
 run: all
-	./sketch
+	./bin/sketch
+	./bin/sketch_avx
 
 fasta.o: fasta.cpp
 	$(G++) $(FLAGS) -c $^ -o $@
 
-sketch: sketch.cpp fasta.o
+bin/sketch: sketch.cpp fasta.o
+	@$(MKDIR) $(@D)
+	$(G++) $(FLAGS) $^ -o $@
+
+bin/sketch_avx: sketch_avx.cpp fasta.o
+	@$(MKDIR) $(@D)
 	$(G++) $(FLAGS) $^ -o $@
 
 clean:
-	rm sketch
+	rm -r bin/
