@@ -1,3 +1,10 @@
+/**
+ * @brief .fasta file parsing for k-mers extraction
+ *
+ * @file fasta.cpp
+ * @author your name
+ */
+
 #include "fasta.hpp"
 
 

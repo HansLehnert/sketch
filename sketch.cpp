@@ -1,9 +1,10 @@
 /**
- * @brief Countmin-CU sketch implementation
+ * @brief Countmin-CU sketch
+ *
+ * Base implementation
  *
  * @file sketch.cpp
  * @author Hans Lehnert
- * @date 2018-07-18
  */
 
 #include <iostream>
