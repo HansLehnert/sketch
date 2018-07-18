@@ -1,15 +1,15 @@
 G++ = g++
 FLAGS = -std=c++11 -O3 -mavx -mavx2
 
-all: sketch sketch_avx
+all: sketch
 
 run: all
 	./sketch
 
-sketch: sketch.cpp
-	$(G++) $(FLAGS) $^ -o $@
+fasta.o: fasta.cpp
+	$(G++) $(FLAGS) -c $^ -o $@
 
-sketch_avx: sketch_avx.cpp
+sketch: sketch.cpp fasta.o
 	$(G++) $(FLAGS) $^ -o $@
 
 clean:
