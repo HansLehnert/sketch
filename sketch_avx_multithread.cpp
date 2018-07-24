@@ -1,7 +1,7 @@
 /**
  * @brief Countmin-CU sketch
  *
- * Implementation using vector (AVX) instructions
+ * Implementation using vector (AVX) instructions and multithreading
  *
  * @file sketch_avx.cpp
  * @author Hans Lehnert

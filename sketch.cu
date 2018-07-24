@@ -1,7 +1,7 @@
 /**
  * @brief Countmin-CU sketch
  *
- * Base implementation
+ * CUDA implementation
  *
  * @file sketch.cpp
  * @author Hans Lehnert
@@ -26,8 +26,7 @@ const unsigned int RHO = 145;
 /**
  * @brief Compute H3 hash
  */
-__global__
-void hashH3(
+__global__ void hashH3(
         unsigned int n,
         unsigned int* keys,
         unsigned short* seeds,
@@ -76,7 +75,6 @@ int main(int argc, char* argv[]) {
         data[i] = data_vector[i];
     }
 
-
     std::unordered_set<unsigned int> heavy_hitters;
     heavy_hitters.reserve(n_data / 10);
 
@@ -84,7 +82,7 @@ int main(int argc, char* argv[]) {
     unsigned short* hashes;
     cudaMallocManaged(&hashes, N_HASH * n_data * sizeof(unsigned short));
 
-    int block_size = 256;
+    int block_size = 128;
     int num_blocks = (n_data + block_size - 1) / block_size;
 
     for (unsigned int i = 0; i < N_HASH; i++) {
@@ -97,14 +95,14 @@ int main(int argc, char* argv[]) {
         unsigned int min_hits = std::numeric_limits<unsigned int>::max();
 
         for (unsigned int j = 0; j < N_HASH; j++) {
-            if (sketch[hashes[i + n_data * j] + (1 << M) * j] < min_hits) {
-                min_hits = sketch[hashes[i + n_data * j] + (1 << M) * j];
+            if (sketch[hashes[i + n_data * j] + (j << M)] < min_hits) {
+                min_hits = sketch[hashes[i + n_data * j] + (j << M)];
             }
         }
 
         for (unsigned int j = 0; j < N_HASH; j++) {
-            if (sketch[hashes[i + n_data * j] + (1 << M) * j] == min_hits) {
-                sketch[hashes[i + n_data * j] + (1 << M) * j]++;
+            if (sketch[hashes[i + n_data * j] + (j << M)] == min_hits) {
+                sketch[hashes[i + n_data * j] + (j << M)]++;
             }
         }
 
