@@ -4,11 +4,12 @@ CPP_FLAGS = -std=c++11 -O3
 AVX_FLAGS = -mavx -mavx2
 MKDIR = mkdir -p
 
-all: bin/sketch bin/sketch_avx bin/sketch_cu
+all: bin/sketch bin/sketch_avx bin/sketch_avx_multithread bin/sketch_cu
 
 run: all
 	./bin/sketch
 	./bin/sketch_avx
+	./bin/sketch_avx_multithread
 	./bin/sketch_cu
 
 fasta.o: fasta.cpp
@@ -21,6 +22,10 @@ bin/sketch: sketch.cpp fasta.o
 bin/sketch_avx: sketch_avx.cpp fasta.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) $^ -o $@
+
+bin/sketch_avx_multithread: sketch_avx_multithread.cpp fasta.o
+	@$(MKDIR) $(@D)
+	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) -pthread $^ -o $@
 
 bin/sketch_cu: sketch.cu fasta.o
 	@$(MKDIR) $(@D)
