@@ -2,6 +2,7 @@ G++ = g++
 NVCC = nvcc
 CPP_FLAGS = -std=c++11 -O3
 AVX_FLAGS = -mavx -mavx2
+CU_FLAGS = -std=c++11 -O3
 MKDIR = mkdir -p
 
 USE_CUDA := $(shell command -v nvcc 2> /dev/null)
@@ -51,7 +52,7 @@ bin/sketch_avx_multithread: sketch_avx_multithread.cpp bin/fasta.o
 
 bin/sketch_cu: sketch.cu bin/fasta.o
 	@$(MKDIR) $(@D)
-	$(NVCC) $(CPP_FLAGS) $^ -o $@
+	$(NVCC) $(CU_FLAGS) --compiler-options="$(AVX_FLAGS) $(CPP_FLAGS)" $^ -o $@
 
 clean:
 	rm -r bin/
