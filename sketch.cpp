@@ -16,6 +16,7 @@
 #include <unordered_set>
 
 #include "fasta.hpp"
+#include "Table.hpp"
 
 
 const unsigned int N_HASH = 4;
@@ -26,9 +27,10 @@ const unsigned int RHO = 145;
 /**
  * @brief Compute H3 hash
  */
-unsigned int hashH3(unsigned int key, unsigned short* seeds) {
+template <int bits>
+unsigned int hashH3(unsigned long key, unsigned short* seeds) {
     unsigned int result = 0;
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < bits; i++) {
         if (key & 1)
             result ^= seeds[i];
         key >>= 1;
@@ -59,11 +61,11 @@ int main(int argc, char* argv[]) {
 
     // Parse data set
     std::ifstream dataset_file(argv[1]);
-    std::vector<unsigned int> data_vectors = parseFasta(dataset_file, 16);
+    std::vector<unsigned long> data_vectors = parseFasta(dataset_file, 16);
     dataset_file.close();
 
-    std::unordered_set<unsigned int> heavy_hitters;
-    heavy_hitters.reserve(data_vectors.size() / 10);
+    std::unordered_set<unsigned long> heavy_hitters;
+    // heavy_hitters.reserve(data_vectors.size() / 10);
 
     // Hash values
     for (unsigned int i = 0; i < data_vectors.size(); i++) {
@@ -71,7 +73,7 @@ int main(int argc, char* argv[]) {
         unsigned int hashes[N_HASH];
 
         for (unsigned int j = 0; j < N_HASH; j++) {
-            hashes[j] = hashH3(data_vectors[i], seeds[j]);
+            hashes[j] = hashH3<32>(data_vectors[i], seeds[j]);
             if (sketch[j][hashes[j]] < min_hits) {
                 min_hits = sketch[j][hashes[j]];
             }
@@ -84,9 +86,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (min_hits + 1 >= RHO) {
-            if (heavy_hitters.find(data_vectors[i]) == heavy_hitters.end()) {
-                heavy_hitters.insert(data_vectors[i]);
-            }
+            heavy_hitters.insert(data_vectors[i]);
         }
     }
 
@@ -98,29 +98,11 @@ int main(int argc, char* argv[]) {
     std::cout << "Heavy-hitters: " << heavy_hitters.size() << std::endl;
 
     // Write heavy-hitters to output file
-    // std::ofstream heavy_hitters_file("heavy-hitters.txt");
-    // for (auto x : heavy_hitters) {
-    //     std::string sequence;
-
-    //     for (int i = 0; i < 16; i++) {
-    //         switch (x << (i * 2) >> 30) {
-    //         case 0:
-    //             sequence += 'A';
-    //             break;
-    //         case 1:
-    //             sequence += 'C';
-    //             break;
-    //         case 2:
-    //             sequence += 'T';
-    //             break;
-    //         case 3:
-    //             sequence += 'G';
-    //             break;
-    //         }
-    //     }
-    //     heavy_hitters_file << sequence << std::endl;
-    // }
-    // heavy_hitters_file.close();
+    std::ofstream heavy_hitters_file("heavy-hitters.txt");
+    for (auto x : heavy_hitters) {
+        heavy_hitters_file << sequenceToString(x, 32) << std::endl;
+    }
+    heavy_hitters_file.close();
 
     return 0;
 }
