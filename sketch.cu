@@ -23,14 +23,17 @@ const unsigned int M = 14;
 const unsigned int RHO = 145;
 
 
+__constant__ unsigned short d_seeds[N_HASH * 32];
+
+
 /**
  * @brief Compute H3 hash
  */
 __global__ void hashH3(
         unsigned int n,
-        unsigned int* keys,
-        unsigned short* seeds,
-        unsigned short* hashes) {
+        unsigned long* keys,
+        unsigned short* hashes,
+        int seed_offset) {
     unsigned int start_index = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int stride = blockDim.x * gridDim.x;
 
@@ -40,7 +43,7 @@ __global__ void hashH3(
 
         for (int j = 0; j < 32; j++) {
             if (keys[i] & mask)
-                hashes[i] ^= seeds[j];
+                hashes[i] ^= d_seeds[j + seed_offset * 32];
             mask <<= 1;
         }
     }
@@ -54,65 +57,87 @@ int main(int argc, char* argv[]) {
     }
 
     // Generate hash vectors
-    unsigned short* seeds;
-    cudaMallocManaged(&seeds, N_HASH * 32 * sizeof(unsigned short));
-
-    for (unsigned int i = 0; i < N_HASH * 32; i++) {
-        seeds[i] = rand() & ((1 << M) - 1);
-    }
+    unsigned short h_seeds[N_HASH * 32];
+    for (unsigned int i = 0; i < N_HASH * 32; i++)
+        h_seeds[i] = rand() & ((1 << M) - 1);
+    cudaMemcpyToSymbol(d_seeds, h_seeds, sizeof(d_seeds));
 
     // Create sketch
-    unsigned int* sketch;
-    cudaMallocManaged(&sketch, N_HASH * (1 << M) * sizeof(unsigned int));
+    unsigned int sketch[N_HASH * (1 << M)];
+    //cudaMallocManaged(&sketch, N_HASH * (1 << M) * sizeof(unsigned int));
 
     // Start time measurement
     auto start = std::chrono::steady_clock::now();
 
-    // Parse data set
+    // Parse data set and transfer to device
     std::ifstream dataset_file(argv[1]);
-    std::vector<unsigned int> data_vector = parseFasta(dataset_file, 16);
+    std::vector<unsigned long> data_vector = parseFasta(dataset_file, 16);
     dataset_file.close();
 
-    unsigned int n_data = data_vector.size();
-    unsigned int* data;
-    cudaMallocManaged(&data, n_data * sizeof(unsigned int));
-    for (int i = 0; i < n_data; i++) {
-        data[i] = data_vector[i];
-    }
+    unsigned long n_data = data_vector.size();
+    unsigned long* h_data;
+    unsigned long* d_data;
+    cudaHostAlloc(
+        &h_data, n_data * sizeof(unsigned long), cudaHostAllocWriteCombined);
+    cudaMemcpyAsync(
+        h_data,
+        data_vector.data(),
+        n_data * sizeof(unsigned long),
+        cudaMemcpyHostToHost);
 
-    std::unordered_set<unsigned int> heavy_hitters;
-    heavy_hitters.reserve(n_data / 10);
+    cudaMalloc(&d_data, n_data * sizeof(unsigned long));
+    cudaMemcpyAsync(
+        d_data,
+        h_data,
+        n_data * sizeof(unsigned long),
+        cudaMemcpyHostToDevice);
 
     // Hash values
-    unsigned short* hashes;
-    cudaMallocManaged(&hashes, N_HASH * n_data * sizeof(unsigned short));
+    unsigned short* d_hashes;
+    unsigned short* h_hashes;
+    cudaMalloc(&d_hashes, N_HASH * n_data * sizeof(unsigned short));
+    cudaHostAlloc(
+        &h_hashes,
+        N_HASH * n_data * sizeof(unsigned short),
+        cudaHostAllocDefault);
 
     int block_size = 128;
     int num_blocks = (n_data + block_size - 1) / block_size;
 
     for (unsigned int i = 0; i < N_HASH; i++) {
         hashH3<<<num_blocks, block_size>>>(
-            n_data, data, seeds + 32 * i, hashes + n_data * i);
+            n_data, d_data, d_hashes + n_data * i, i);
     }
+
+    cudaMemcpyAsync(
+        h_hashes,
+        d_hashes,
+        N_HASH * n_data * sizeof(unsigned short),
+        cudaMemcpyDeviceToHost);
+
     cudaDeviceSynchronize();
+
+    // Find heaavy-hitters
+    std::unordered_set<unsigned long> heavy_hitters;
+    heavy_hitters.reserve(n_data / 10);
 
     for (unsigned int i = 0; i < n_data; i++) {
         unsigned int min_hits = std::numeric_limits<unsigned int>::max();
 
         for (unsigned int j = 0; j < N_HASH; j++) {
-            if (sketch[hashes[i + n_data * j] + (j << M)] < min_hits) {
-                min_hits = sketch[hashes[i + n_data * j] + (j << M)];
+            if (sketch[h_hashes[i + n_data * j] + (j << M)] < min_hits) {
+                min_hits = sketch[h_hashes[i + n_data * j] + (j << M)];
             }
         }
 
         for (unsigned int j = 0; j < N_HASH; j++) {
-            if (sketch[hashes[i + n_data * j] + (j << M)] == min_hits) {
-                sketch[hashes[i + n_data * j] + (j << M)]++;
+            if (sketch[h_hashes[i + n_data * j] + (j << M)] == min_hits) {
+                sketch[h_hashes[i + n_data * j] + (j << M)]++;
             }
         }
 
         if (min_hits + 1 >= RHO) {
-            heavy_hitters.insert(data[i]);
+            heavy_hitters.insert(data_vector[i]);
         }
     }
 
@@ -127,32 +152,16 @@ int main(int argc, char* argv[]) {
     // Write heavy-hitters to output file
     std::ofstream heavy_hitters_file("heavy-hitters_cu.txt");
     for (auto x : heavy_hitters) {
-        std::string sequence;
-
-        for (int i = 0; i < 16; i++) {
-            switch (x << (i * 2) >> 30) {
-            case 0:
-                sequence += 'A';
-                break;
-            case 1:
-                sequence += 'C';
-                break;
-            case 2:
-                sequence += 'T';
-                break;
-            case 3:
-                sequence += 'G';
-                break;
-            }
-        }
-        heavy_hitters_file << sequence << std::endl;
+        heavy_hitters_file << sequenceToString(x, 16) << std::endl;
     }
     heavy_hitters_file.close();
 
     // Free shared memory
-    cudaFree(seeds);
-    cudaFree(sketch);
-    cudaFree(hashes);
+    cudaFree(d_data);
+    cudaFree(d_hashes);
+    cudaFreeHost(h_data);
+    cudaFreeHost(h_hashes);
+    // cudaFree(sketch);
 
     return 0;
 }
