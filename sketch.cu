@@ -48,6 +48,11 @@ __global__ void hashH3(
 
 
 int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cout << "Missing dataset file." << std::endl;
+        return 1;
+    }
+
     // Generate hash vectors
     unsigned short* seeds;
     cudaMallocManaged(&seeds, N_HASH * 32 * sizeof(unsigned short));
@@ -64,7 +69,7 @@ int main(int argc, char* argv[]) {
     auto start = std::chrono::steady_clock::now();
 
     // Parse data set
-    std::ifstream dataset_file("data/test.fasta");
+    std::ifstream dataset_file(argv[1]);
     std::vector<unsigned int> data_vector = parseFasta(dataset_file, 16);
     dataset_file.close();
 
@@ -115,8 +120,9 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Data vectors: " << n_data << std::endl;
     std::cout << "Execution time: " << diff.count() << " s" << std::endl;
+    std::cout << "Data vectors: " << n_data << std::endl;
+    std::cout << "Heavy-hitters: " << heavy_hitters.size() << std::endl;
 
     // Write heavy-hitters to output file
     std::ofstream heavy_hitters_file("heavy-hitters_cu.txt");

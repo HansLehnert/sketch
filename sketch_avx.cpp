@@ -55,6 +55,11 @@ __m256i hashH3_vec(__m256i keys, unsigned short* seeds) {
 
 
 int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cout << "Missing dataset file." << std::endl;
+        return 1;
+    }
+
     // Generate hash vectors
     unsigned short seeds[N_HASH][32];
     for (unsigned int i = 0; i < N_HASH; i++) {
@@ -70,7 +75,7 @@ int main(int argc, char* argv[]) {
     auto start = std::chrono::steady_clock::now();
 
     // Parse data set
-    std::ifstream dataset_file("data/test.fasta");
+    std::ifstream dataset_file(argv[1]);
     std::vector<unsigned int> data_vectors = parseFasta(dataset_file, 16);
     dataset_file.close();
 
@@ -118,8 +123,9 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Data vectors: " << data_vectors.size() << std::endl;
     std::cout << "Execution time: " << diff.count() << " s" << std::endl;
+    std::cout << "Data vectors: " << data_vectors.size() << std::endl;
+    std::cout << "Heavy-hitters: " << heavy_hitters.size() << std::endl;
 
     // Write heavy-hitters to output file
     std::ofstream heavy_hitters_file("heavy-hitters_avx.txt");
