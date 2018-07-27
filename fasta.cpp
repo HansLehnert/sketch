@@ -8,8 +8,9 @@
 #include "fasta.hpp"
 
 
-std::vector<unsigned int> parseFasta(std::istream& input, int length) {
-    std::vector<unsigned int> data_vectors;
+std::vector<unsigned long> parseFasta(std::istream& input, int length) {
+    std::vector<unsigned long> data_vectors;
+    unsigned long mask = ~0UL >> (64 - length * 2);
 
     while (!input.eof()) {
         std::string line;
@@ -20,7 +21,7 @@ std::vector<unsigned int> parseFasta(std::istream& input, int length) {
             continue;
         }
 
-        unsigned int sequence = 0;
+        unsigned long sequence = 0;
         for (unsigned int i = 0; i < line.length(); i++) {
             sequence <<= 2;
             switch(line[i]) {
@@ -39,9 +40,33 @@ std::vector<unsigned int> parseFasta(std::istream& input, int length) {
             }
 
             if (i >= length - 1)
-                data_vectors.push_back(sequence);
+                data_vectors.push_back(sequence & mask);
         }
     }
 
     return data_vectors;
+}
+
+
+std::string sequenceToString(unsigned long sequence, int length) {
+    std::string result = "";
+
+    for (int i = length - 1; i >= 0; i--) {
+        switch ((sequence >> (i * 2)) & 0b11) {
+        case 0:
+            result += 'A';
+            break;
+        case 1:
+            result += 'C';
+            break;
+        case 2:
+            result += 'T';
+            break;
+        case 3:
+            result += 'G';
+            break;
+        }
+    }
+
+    return result;
 }
