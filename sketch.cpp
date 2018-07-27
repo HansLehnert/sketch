@@ -16,7 +16,6 @@
 #include <unordered_set>
 
 #include "fasta.hpp"
-#include "Table.hpp"
 
 
 const unsigned int N_HASH = 4;
@@ -100,7 +99,7 @@ int main(int argc, char* argv[]) {
     // Write heavy-hitters to output file
     std::ofstream heavy_hitters_file("heavy-hitters.txt");
     for (auto x : heavy_hitters) {
-        heavy_hitters_file << sequenceToString(x, 32) << std::endl;
+        heavy_hitters_file << sequenceToString(x, 16) << std::endl;
     }
     heavy_hitters_file.close();
 

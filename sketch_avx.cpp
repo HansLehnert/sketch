@@ -76,15 +76,18 @@ int main(int argc, char* argv[]) {
 
     // Parse data set
     std::ifstream dataset_file(argv[1]);
-    std::vector<unsigned int> data_vectors = parseFasta(dataset_file, 16);
+    std::vector<unsigned long> data_vectors = parseFasta(dataset_file, 16);
     dataset_file.close();
 
-    std::unordered_set<unsigned int> heavy_hitters;
+    std::unordered_set<unsigned long> heavy_hitters;
     heavy_hitters.reserve(data_vectors.size() / 10);
 
     // Hash values
     for (unsigned int i = 0; i < data_vectors.size() - 8; i += 8) {
-        __m256i keys = _mm256_loadu_si256((__m256i*)(data_vectors.data() + i));
+        __m256i keys = _mm256_i32gather_epi32(
+            (int*)(data_vectors.data() + i),
+            _mm256_set_epi32(0, 1, 2, 3, 4, 5, 6, 7),
+            sizeof(unsigned long));
 
         __m256i min_hits = _mm256_set1_epi32(
             std::numeric_limits<unsigned int>::max());
@@ -130,25 +133,7 @@ int main(int argc, char* argv[]) {
     // Write heavy-hitters to output file
     std::ofstream heavy_hitters_file("heavy-hitters_avx.txt");
     for (auto x : heavy_hitters) {
-        std::string sequence;
-
-        for (int i = 0; i < 16; i++) {
-            switch (x << (i * 2) >> 30) {
-            case 0:
-                sequence += 'A';
-                break;
-            case 1:
-                sequence += 'C';
-                break;
-            case 2:
-                sequence += 'T';
-                break;
-            case 3:
-                sequence += 'G';
-                break;
-            }
-        }
-        heavy_hitters_file << sequence << std::endl;
+        heavy_hitters_file << sequenceToString(x, 16) << std::endl;
     }
     heavy_hitters_file.close();
 
