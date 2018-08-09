@@ -16,7 +16,6 @@
 #include <unordered_set>
 
 #include "fasta.hpp"
-#include "Table.hpp"
 
 
 const unsigned int N_HASH = 4;
