@@ -87,7 +87,7 @@ int main(int argc, char* argv[]) {
         __m256i keys = _mm256_i32gather_epi32(
             (int*)(data_vectors.data() + i),
             _mm256_set_epi32(0, 1, 2, 3, 4, 5, 6, 7),
-            sizeof(unsigned long));
+            8);//sizeof(unsigned long));
 
         __m256i min_hits = _mm256_set1_epi32(
             std::numeric_limits<unsigned int>::max());
@@ -98,14 +98,14 @@ int main(int argc, char* argv[]) {
             hashes[j] = hashH3_vec(keys, seeds[j]);
 
             __m256i hits = _mm256_i32gather_epi32(
-                (int*)sketch[j], hashes[j], sizeof(unsigned int));
+                (int*)sketch[j], hashes[j], 4);//sizeof(unsigned int));
             min_hits = _mm256_min_epu32(min_hits, hits);
         }
 
         // Update counters
         for (unsigned int j = 0; j < N_HASH; j++) {
             __m256i counter = _mm256_i32gather_epi32(
-                (int*)sketch[j], hashes[j], sizeof(unsigned int));
+                (int*)sketch[j], hashes[j], 4);//sizeof(unsigned int));
             __m256i cmp_mask = _mm256_cmpeq_epi32(counter, min_hits);
 
             for (int k = 0; k < 8; k++) {

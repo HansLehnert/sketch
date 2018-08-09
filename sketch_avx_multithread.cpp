@@ -64,8 +64,8 @@ void hashWorker(
     for (unsigned int i = 0; i < n; i += 8) {
         __m256i keys_vec = _mm256_i32gather_epi32(
             (int*)(keys + i),
-            _mm256_set_epi32(0, 1, 2, 3, 4, 5, 6, 7),
-            sizeof(unsigned long));
+            _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0),
+            8);//sizeof(unsigned long));
 
         for (unsigned int j = 0; j < N_HASH; j++) {
             __m256i hash_vec = hashH3_vec(keys_vec, seeds + j * 32);
@@ -106,7 +106,7 @@ int main(int argc, char* argv[]) {
     unsigned int* hashes = new unsigned int[data_vectors.size() * N_HASH];
 
     unsigned int n_threads = std::thread::hardware_concurrency();
-    std::thread threads[n_threads];
+    std::thread* threads = new std::thread[n_threads];
 
     unsigned int stride =
         ((data_vectors.size() / 8) + n_threads - 1) / n_threads * 8;
@@ -143,14 +143,14 @@ int main(int argc, char* argv[]) {
                 (__m256i*)(hashes + i * N_HASH) + j);
 
             __m256i hits = _mm256_i32gather_epi32(
-                (int*)sketch[j], hashes_vec[j], sizeof(unsigned int));
+                (int*)sketch[j], hashes_vec[j], 4);//sizeof(unsigned int));
             min_hits = _mm256_min_epu32(min_hits, hits);
         }
 
         // Update counters
         for (unsigned int j = 0; j < N_HASH; j++) {
             __m256i counter = _mm256_i32gather_epi32(
-                (int*)sketch[j], hashes_vec[j], sizeof(unsigned int));
+                (int*)sketch[j], hashes_vec[j], 4);//sizeof(unsigned int));
             __m256i cmp_mask = _mm256_cmpeq_epi32(counter, min_hits);
 
             for (int k = 0; k < 8; k++) {
