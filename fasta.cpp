@@ -8,10 +8,6 @@
 #include "fasta.hpp"
 
 #include <iostream>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h>
 
 
 std::vector<unsigned long> parseFasta(std::istream& input, int length) {
@@ -54,28 +50,20 @@ std::vector<unsigned long> parseFasta(std::istream& input, int length) {
 }
 
 
-std::vector<unsigned long> parseFasta(std::string filename, int length) {
-    // Open memory-mapped file
-    int file = open(filename.c_str(), O_RDONLY);
-
-    struct stat file_stat;
-    fstat(file, &file_stat);
-
-    char* data = (char*)mmap(
-        NULL, file_stat.st_size, PROT_READ, MAP_PRIVATE, file, 0);
-
-    // Extract k-mers
+std::vector<unsigned long> parseFasta(
+        const char* data, int data_length, int sequence_length) {
     std::vector<unsigned long> data_vectors;
-    data_vectors.reserve(file_stat.st_size);
+    data_vectors.reserve(data_length);
 
-    unsigned long mask = ~0UL >> (64 - length * 2);
+    unsigned long mask = ~0UL >> (64 - sequence_length * 2);
     unsigned long sequence = 0;
-    int sequence_length = 0;
+    int parsed = 0;
     bool skip_line = false;
-    for (int i = 0; i < file_stat.st_size; i++) {
+
+    for (int i = 0; i < data_length; i++) {
         if (data[i] == '\n' || data[i] == '\r') {
             sequence = 0;
-            sequence_length = 0;
+            parsed = 0;
             skip_line = false;
         }
         else if (!skip_line) {
@@ -103,7 +91,7 @@ std::vector<unsigned long> parseFasta(std::string filename, int length) {
 
             sequence &= mask;
 
-            if (sequence_length++ >= length) {
+            if (++parsed >= sequence_length) {
                 data_vectors.push_back(sequence);
             }
         }

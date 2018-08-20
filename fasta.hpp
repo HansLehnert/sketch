@@ -19,7 +19,8 @@
  */
 std::vector<unsigned long> parseFasta(std::istream& input, int length);
 
-std::vector<unsigned long> parseFasta(std::string filename, int length);
+std::vector<unsigned long> parseFasta(
+    const char* data, int data_length, int sequence_length);
 
 
 /**
