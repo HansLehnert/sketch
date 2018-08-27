@@ -51,16 +51,16 @@ std::vector<unsigned long> parseFasta(std::istream& input, int length) {
 
 
 std::vector<unsigned long> parseFasta(
-        const char* data, int data_length, int sequence_length) {
+        const char* data, int data_size, int sequence_length) {
     std::vector<unsigned long> data_vectors;
-    data_vectors.reserve(data_length);
+    data_vectors.reserve(data_size);
 
     unsigned long mask = ~0UL >> (64 - sequence_length * 2);
     unsigned long sequence = 0;
     int parsed = 0;
     bool skip_line = false;
 
-    for (int i = 0; i < data_length; i++) {
+    for (int i = 0; i < data_size; i++) {
         if (data[i] == '\n' || data[i] == '\r') {
             sequence = 0;
             parsed = 0;
