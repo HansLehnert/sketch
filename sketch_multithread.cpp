@@ -28,7 +28,7 @@ const unsigned int N_LENGTH = MAX_LENGTH - MIN_LENGTH + 1;
 const unsigned int N_HASH = 4;
 const unsigned int HASH_BITS = 14;
 
-constexpr unsigned int THRESHOLD[N_LENGTH] = {
+constexpr unsigned int THRESHOLD[] = {
     365, 308, 257, 161, 150, 145, 145, 145, 145, 145, 145};
 const float GROWTH = 2;
 
@@ -47,16 +47,17 @@ unsigned int hashH3(unsigned long key, unsigned short* seeds, int bits) {
 }
 
 
-template <int length, int threshold>
 void hashWorker(
         MappedFile* test_file,
         MappedFile* control_file,
-        std::unordered_set<unsigned long>* heavy_hitters) {
+        std::unordered_set<unsigned long>* heavy_hitters,
+        int sequence_length,
+        unsigned long threshold) {
 
     // Generate seeds
-    unsigned short seeds[N_HASH][length * 2];
+    unsigned short seeds[N_HASH][sequence_length * 2];
     for (unsigned int i = 0; i < N_HASH; i++) {
-        for (unsigned int j = 0; j < length * 2; j++) {
+        for (unsigned int j = 0; j < sequence_length * 2; j++) {
             seeds[i][j] = rand() & ((1 << HASH_BITS) - 1);
         }
     }
@@ -66,9 +67,9 @@ void hashWorker(
 
     // Parse data sets
     std::vector<unsigned long> data_vectors = parseFasta(
-        test_file->data(), test_file->size(), length);
+        test_file->data(), test_file->size(), sequence_length);
     std::vector<unsigned long> control_vectors = parseFasta(
-        control_file->data(), control_file->size(), length);
+        control_file->data(), control_file->size(), sequence_length);
 
     // Hash values
     for (unsigned int i = 0; i < data_vectors.size(); i++) {
@@ -76,7 +77,7 @@ void hashWorker(
         unsigned int hashes[N_HASH];
 
         for (unsigned int j = 0; j < N_HASH; j++) {
-            hashes[j] = hashH3(data_vectors[i], seeds[j], length * 2);
+            hashes[j] = hashH3(data_vectors[i], seeds[j], sequence_length * 2);
             if (sketch[j][hashes[j]] < min_hits) {
                 min_hits = sketch[j][hashes[j]];
             }
@@ -100,7 +101,7 @@ void hashWorker(
         frequencies[i] = std::numeric_limits<int>::max();
 
         for (unsigned int j = 0; j < N_HASH; j++) {
-            unsigned int hash = hashH3(i, seeds[j], length * 2);
+            unsigned int hash = hashH3(i, seeds[j], sequence_length * 2);
             if (sketch[j][hash] < frequencies[i]) {
                 frequencies[i] = sketch[j][hash];
             }
@@ -145,17 +146,16 @@ int main(int argc, char* argv[]) {
     std::unordered_set<unsigned long> heavy_hitters[N_LENGTH];
     std::thread worker_threads[N_LENGTH];
 
-    worker_threads[0] = std::thread(hashWorker<10, THRESHOLD[0]>, &test_file, &control_file, &heavy_hitters[0]);
-    worker_threads[1] = std::thread(hashWorker<11, THRESHOLD[1]>, &test_file, &control_file, &heavy_hitters[1]);
-    worker_threads[2] = std::thread(hashWorker<12, THRESHOLD[2]>, &test_file, &control_file, &heavy_hitters[2]);
-    worker_threads[3] = std::thread(hashWorker<13, THRESHOLD[3]>, &test_file, &control_file, &heavy_hitters[3]);
-    worker_threads[4] = std::thread(hashWorker<14, THRESHOLD[4]>, &test_file, &control_file, &heavy_hitters[4]);
-    worker_threads[5] = std::thread(hashWorker<15, THRESHOLD[5]>, &test_file, &control_file, &heavy_hitters[5]);
-    worker_threads[6] = std::thread(hashWorker<16, THRESHOLD[6]>, &test_file, &control_file, &heavy_hitters[6]);
-    worker_threads[7] = std::thread(hashWorker<17, THRESHOLD[7]>, &test_file, &control_file, &heavy_hitters[7]);
-    worker_threads[8] = std::thread(hashWorker<18, THRESHOLD[8]>, &test_file, &control_file, &heavy_hitters[8]);
-    worker_threads[9] = std::thread(hashWorker<19, THRESHOLD[9]>, &test_file, &control_file, &heavy_hitters[9]);
-    worker_threads[10] = std::thread(hashWorker<20, THRESHOLD[10]>, &test_file, &control_file, &heavy_hitters[10]);
+    for (int n = 0; n < N_LENGTH; n++) {
+        worker_threads[n] = std::thread(
+            hashWorker,
+            &test_file,
+            &control_file,
+            &heavy_hitters[n],
+            MIN_LENGTH + n,
+            THRESHOLD[n]
+        );
+    }
 
     for (int n = 0; n < N_LENGTH; n++) {
         worker_threads[n].join();
@@ -173,6 +173,10 @@ int main(int argc, char* argv[]) {
 
     for (int n = 0; n < N_LENGTH; n++) {
         heavy_hitters_count += heavy_hitters[n].size();
+        std::cout
+            << "Heavy-hitters (length " << MIN_LENGTH + n << "): "
+            << heavy_hitters[n].size() << std::endl;
+
 
         for (auto x : heavy_hitters[n]) {
             heavy_hitters_file
@@ -182,7 +186,7 @@ int main(int argc, char* argv[]) {
 
     heavy_hitters_file.close();
 
-    std::cout << "Heavy-hitters: " << heavy_hitters_count << std::endl;
+    std::cout << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
 
     return 0;
 }
