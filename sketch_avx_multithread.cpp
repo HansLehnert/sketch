@@ -78,7 +78,7 @@ void hashWorker(
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cout << "Missing dataset file." << std::endl;
+        std::cerr << "Missing dataset file." << std::endl;
         return 1;
     }
 
@@ -171,16 +171,14 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Execution time: " << diff.count() << " s" << std::endl;
-    std::cout << "Data vectors: " << data_vectors.size() << std::endl;
-    std::cout << "Heavy-hitters: " << heavy_hitters.size() << std::endl;
+    std::clog << "Execution time: " << diff.count() << " s" << std::endl;
+    std::clog << "Data vectors: " << data_vectors.size() << std::endl;
+    std::clog << "Heavy-hitters: " << heavy_hitters.size() << std::endl;
 
-    // Write heavy-hitters to output file
-    std::ofstream heavy_hitters_file("heavy-hitters_avx-multithread.txt");
+    // Print heavy-hitters
     for (auto x : heavy_hitters) {
-        heavy_hitters_file << sequenceToString(x, 16) << std::endl;
+        std::cout << sequenceToString(x, 16) << std::endl;
     }
-    heavy_hitters_file.close();
 
     return 0;
 }

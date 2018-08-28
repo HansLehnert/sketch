@@ -377,30 +377,26 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Execution time: " << diff.count() << " s" << std::endl;
-    std::cout << "Data vectors: " << n_data_test << std::endl;
+    std::clog << "Execution time: " << diff.count() << " s" << std::endl;
+    std::clog << "Data vectors: " << n_data_test << std::endl;
 
-    // Write heavy-hitters to output file
-    std::ofstream heavy_hitters_file("heavy-hitters_cu-pipelined.txt");
+    // Print heavy-hitters
     int heavy_hitters_total = 0;
 
     for (int n = 0; n < N_LENGTH; n++) {
         heavy_hitters_total += heavy_hitters_count[n];
-        std::cout
+        std::clog
             << "Heavy-hitters (length " << MIN_LENGTH + n << "): "
             << heavy_hitters_count[n] << std::endl;
 
         for (int m = 0; m < heavy_hitters_count[n]; m++) {
-            heavy_hitters_file
-                << h_heavy_hitters[n][m]
-                // << sequenceToString(test_data[h_heavy_hitters[n][m]], MIN_LENGTH + n)
+            std::cout
+                << sequenceToString(test_data[h_heavy_hitters[n][m]], MIN_LENGTH + n)
                 << std::endl;
         }
     }
 
-    heavy_hitters_file.close();
-
-    std::cout << "Heavy-hitters (total): " << heavy_hitters_total << std::endl;
+    std::clog << "Heavy-hitters (total): " << heavy_hitters_total << std::endl;
 
     // Free shared memory
     // cudaFree(d_data);

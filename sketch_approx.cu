@@ -79,7 +79,7 @@ __global__ void countminCu(
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cout << "Missing dataset file." << std::endl;
+        std::cerr << "Missing dataset file." << std::endl;
         return 1;
     }
 
@@ -153,18 +153,14 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Execution time: " << diff.count() << " s" << std::endl;
-    std::cout << "Data vectors: " << n_data << std::endl;
-    std::cout << "Heavy-hitters: " << *heavy_hitters_count << std::endl;
+    std::clog << "Execution time: " << diff.count() << " s" << std::endl;
+    std::clog << "Data vectors: " << n_data << std::endl;
+    std::clog << "Heavy-hitters: " << *heavy_hitters_count << std::endl;
 
-    // Write heavy-hitters to output file
-    std::ofstream heavy_hitters_file("heavy-hitters_cu-approx.txt");
+    // Print heavy-hitters
     for (int i = 0; i < *heavy_hitters_count; i++) {
-        heavy_hitters_file
-            << sequenceToString(h_heavy_hitters[i], 16)
-            << std::endl;
+        std::cout << sequenceToString(h_heavy_hitters[i], 16) << std::endl;
     }
-    heavy_hitters_file.close();
 
     // Free shared memory
     cudaFree(d_data);

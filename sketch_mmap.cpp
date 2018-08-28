@@ -142,25 +142,23 @@ int main(int argc, char* argv[]) {
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Execution time: " << diff.count() << " s" << std::endl;
+    std::clog << "Execution time: " << diff.count() << " s" << std::endl;
 
-    // Write heavy-hitters to output file
-    std::ofstream heavy_hitters_file("heavy-hitters.txt");
-
+    // Print heavy-hitters
     int heavy_hitters_count = 0;
 
     for (int n = 0; n < N_LENGTH; n++) {
         heavy_hitters_count += heavy_hitters[n].size();
+        std::clog
+            << "Heavy-hitters (length " << MIN_LENGTH + n << "): "
+            << heavy_hitters[n].size() << std::endl;
 
         for (auto x : heavy_hitters[n]) {
-            heavy_hitters_file
-                << sequenceToString(x, MIN_LENGTH + n) << std::endl;
+            std::cout << sequenceToString(x, MIN_LENGTH + n) << std::endl;
         }
     }
 
-    heavy_hitters_file.close();
-
-    std::cout << "Heavy-hitters: " << heavy_hitters_count << std::endl;
+    std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
 
     return 0;
 }

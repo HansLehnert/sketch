@@ -9,14 +9,20 @@ USE_CUDA := $(shell command -v nvcc 2> /dev/null)
 USE_AVX := $(shell grep avx2 /proc/cpuinfo)
 
 
-EXECUTABLES = sketch sketch_mmap sketch_multithread
+# EXECUTABLES += sketch
+EXECUTABLES += sketch_mmap
+EXECUTABLES += sketch_multithread
 
 ifdef USE_AVX
-	EXECUTABLES += sketch_avx sketch_avx_multithread sketch_avx_multithread_approx
+	# EXECUTABLES += sketch_avx
+	# EXECUTABLES += sketch_avx_multithread
+	# EXECUTABLES += sketch_avx_multithread_approx
 endif
 
 ifdef USE_CUDA
-	EXECUTABLES += sketch_cu sketch_cu_approx sketch_cu_pipelined
+	EXECUTABLES += sketch_cu
+	EXECUTABLES += sketch_cu_pipelined
+	# EXECUTABLES += sketch_cu_approx
 endif
 
 DATASET = ./data/test.fasta ./data/control.fasta
@@ -24,18 +30,20 @@ DATASET = ./data/test.fasta ./data/control.fasta
 all: $(addprefix bin/, $(EXECUTABLES))
 
 run: all
-	./bin/sketch_mmap $(DATASET)
-	./bin/sketch_multithread $(DATASET)
-ifdef USE_AVX
-# ./bin/sketch_avx $(DATASET)
-# ./bin/sketch_avx_multithread $(DATASET)
-# ./bin/sketch_avx_multithread_approx $(DATASET)
-endif
-ifdef USE_CUDA
-	./bin/sketch_cu $(DATASET)
-	./bin/sketch_cu_pipelined $(DATASET)
-# ./bin/sketch_cu_approx $(DATASET)
-endif
+	@$(MKDIR) out/
+# 	./bin/sketch_mmap $(DATASET) > out/mmap.txt
+# 	./bin/sketch_multithread $(DATASET) > out/multithread.txt
+# ifdef USE_AVX
+# # ./bin/sketch_avx $(DATASET) > out/avx.txt
+# # ./bin/sketch_avx_multithread $(DATASET) > out/avx_mutithread.tx
+# # ./bin/sketch_avx_multithread_approx $(DATASET) > out/avx_multithread_approx.txt
+# endif
+# ifdef USE_CUDA
+# 	./bin/sketch_cu $(DATASET) > out/cuda.txt
+# 	./bin/sketch_cu_pipelined $(DATASET) > out/cuda_pipelined.txt
+# # ./bin/sketch_cu_approx $(DATASET) > out/cuda_approx.txt
+# endif
+	@$(foreach exec, $(EXECUTABLES), echo $(exec);./bin/$(exec) $(DATASET) > out/$(exec).txt;)
 
 bin/%.o: %.cpp
 	@$(MKDIR) $(@D)
