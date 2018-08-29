@@ -64,8 +64,8 @@ union vec256 {
     uint32_t i[8];
     uint64_t l[4];
     struct {
-        vec128 low;
-        vec128 high;
+        vec128 lo;
+        vec128 hi;
     };
 };
 
@@ -79,9 +79,8 @@ void hashWorker(
 
     const char* data = test_file->data();
 
-    vec256 hash_mask;
-    hash_mask.v = _mm256_set1_epi64x(
-        std::numeric_limits<unsigned short>::max());
+    vec128 sketch_offset = { .i = {
+        0, 1 << HASH_BITS, 2 << HASH_BITS, 3 << HASH_BITS} };
 
     int n = 0;
     int end = test_file->size();
@@ -126,20 +125,19 @@ void hashWorker(
             sequence = sequence << 2 | symbol;
 
             // Update hashes
-            vec256 seed_vec;
-            seed_vec.v = _mm256_lddqu_si256(
-                (__m256i*)&seeds.values[symbol][m][0]);
-            hash_vec.v = _mm256_xor_si256(hash_vec.v, seed_vec.v);
+            if (symbol != 0) {  // Symbol 0 hashes with all zeros so we skip it
+                vec256 seed_vec;
+                seed_vec.v = _mm256_lddqu_si256(
+                    (__m256i*)&seeds.values[symbol][m][0]);
+                hash_vec.v = _mm256_xor_si256(hash_vec.v, seed_vec.v);
+            }
 
             // Add to sketch
             if (m + 1 >= MIN_LENGTH) {
-                vec256 hash[N_HASH];
-                vec128 hits[N_HASH];
-                vec128 min_hits;
+                vec128 hash[4];
+                vec128 hits[4];
+                vec128 min_hits[4];
                 int length[4];
-                min_hits.v = _mm_set1_epi32(std::numeric_limits<int>::max());
-
-                vec256 hash_tmp = hash_vec;
 
                 count++;
 
@@ -151,22 +149,34 @@ void hashWorker(
                 }
 
                 // Find the minimum counts
-                for (int i = 0; i < N_HASH; i++) {
-                    hash[i].v = _mm256_and_si256(hash_tmp.v, hash_mask.v);
-                    hits[i].v = _mm256_i64gather_epi32(
-                        &(sketch->count[i][0]), hash[i].v, 4);
-                    hash_tmp.v = _mm256_srli_epi64(hash_tmp.v, 16);
-                    min_hits.v = _mm_min_epi32(min_hits.v, hits[i].v);
+                for (int i = 0; i < 4; i++) {
+
+                    if (write_flag[i]) {
+                        hash[i].v = _mm_unpacklo_epi16(
+                            hash_vec.lo.v, _mm_setzero_si128());
+                        hash[i].v = _mm_or_si128(hash[i].v, sketch_offset.v);
+                        hits[i].v = _mm_i32gather_epi32(
+                            &(sketch[length[i]].count[0][0]), hash[i].v, 4);
+
+                        // Compute the minimum counter value
+                        vec128 min_tmp1, min_tmp2;
+                        min_tmp1.v = _mm_shuffle_epi32(hits[i].v, 0b01001101);
+                        min_tmp1.v = _mm_min_epi32(hits[i].v, min_tmp1.v);
+                        min_tmp2.v = _mm_shuffle_epi32(min_tmp1.v, 0b10110001);
+                        min_hits[i].v = _mm_min_epi32(min_tmp1.v, min_tmp2.v);
+                    }
+
+                    hash_vec.v = _mm256_permute4x64_epi64(hash_vec.v, 0b111001);
                 }
 
                 // Update the counts
-                for (int i = 0; i < N_HASH; i++) {
+                for (int i = 0; i < 4; i++) {
                     vec128 cmp;
-                    cmp.v = _mm_cmpeq_epi32(hits[i].v, min_hits.v);
+                    cmp.v = _mm_cmpeq_epi32(hits[i].v, min_hits[i].v);
 
-                    for (int j = 0; j < 4; j++) {
-                        if (write_flag[j] && cmp.i[j]) {
-                            sketch->count[i][hash[i].l[j]]++;
+                    for (int j = 0; j < N_HASH; j++) {
+                        if (write_flag[i] && cmp.i[j]) {
+                            sketch[length[i]].count[0][hash[i].i[j]]++;
                         }
                     }
                 }
@@ -174,7 +184,7 @@ void hashWorker(
                 // Add sequences which go over the threshold to the results
                 for (int i = 0; i < 4; i++) {
                     if (write_flag[i] &&
-                            min_hits.i[i] == THRESHOLD[length[i]]) {
+                            min_hits[i].i[0] == THRESHOLD[length[i]]) {
                         // Mask to extract the correct length sequence
                         uint64_t mask;
                         mask = ~(~0UL << ((length[i] + MIN_LENGTH) * 2));
