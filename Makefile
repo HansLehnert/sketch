@@ -1,6 +1,6 @@
 G++ = g++
 NVCC = nvcc
-CPP_FLAGS = -std=c++11 -O3 -pthread
+CPP_FLAGS = -std=c++11 -O0 -g -pthread
 AVX_FLAGS = -mavx -mavx2
 CU_FLAGS = -std=c++11 -O3
 MKDIR = mkdir -p
@@ -17,6 +17,7 @@ ifdef USE_AVX
 	# EXECUTABLES += sketch_avx
 	# EXECUTABLES += sketch_avx_multithread
 	# EXECUTABLES += sketch_avx_multithread_approx
+	EXECUTABLES += sketch_avx_pipelined
 endif
 
 ifdef USE_CUDA
@@ -70,6 +71,10 @@ bin/sketch_avx_multithread: sketch_avx_multithread.cpp bin/fasta.o
 	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) $^ -o $@
 
 bin/sketch_avx_multithread_approx: sketch_avx_multithread_approx.cpp bin/fasta.o
+	@$(MKDIR) $(@D)
+	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) $^ -o $@
+
+bin/sketch_avx_pipelined: sketch_avx_pipelined.cpp bin/fasta.o bin/MappedFile.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) $^ -o $@
 
