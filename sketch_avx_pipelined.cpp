@@ -70,22 +70,26 @@ union vec256 {
 };
 
 
-void hashWorker(
+void countminCu(
         const Seeds& seeds,
         Sketch* sketch,
         MappedFile* test_file,
-        MappedFile* control_file,
-        std::unordered_set<unsigned long>* heavy_hitters) {
-
-    const char* data = test_file->data();
+        int data_start,
+        int data_end,
+        std::unordered_map<uint64_t, int>* heavy_hitters) {
 
     vec128 sketch_offset = { .i = {
         0, 1 << HASH_BITS, 2 << HASH_BITS, 3 << HASH_BITS} };
 
-    int n = 0;
-    int end = test_file->size();
+    // Adjust start and end positions to line endings
+    const char* data = test_file->data();
+    int n = data_start;
+    while (n > 0 && data[n - 1] != '\n')
+        n++;
 
-    int count = 0;
+    int end = data_end < test_file->size() ? data_end : test_file->size();
+    while (n < test_file->size() && data[n] != '\n')
+        n++;
 
     while (n < end) {
         // Skip comment lines
@@ -140,8 +144,6 @@ void hashWorker(
                 int length[4];
                 vec128 min_hits[4];
 
-                count++;
-
                 // Calculate sequence length of each of the parallel hashes
                 uint_fast8_t write_flag[4];
                 for (int i = 0; i < 4; i++) {
@@ -156,7 +158,7 @@ void hashWorker(
                             hash_vec.lo.v, _mm_setzero_si128());
                         hash[i].v = _mm_or_si128(hash[i].v, sketch_offset.v);
                         hits[i].v = _mm_i32gather_epi32(
-                            &(sketch[length[i]].count[0][0]), hash[i].v, 4);
+                            sketch[length[i]].count[0], hash[i].v, 4);
 
                         // Compute the minimum counter value
                         vec128 min_tmp1, min_tmp2;
@@ -186,27 +188,93 @@ void hashWorker(
                 // Add sequences which go over the threshold to the results
                 for (int i = 0; i < 4; i++) {
                     if (write_flag[i] &&
-                            min_hits[i].i[0] + 1 == THRESHOLD[length[i]]) {
+                            min_hits[i].i[0] + 1 >= THRESHOLD[length[i]]) {
                         // Mask to extract the correct length sequence
                         uint64_t mask;
                         mask = ~(~0UL << ((length[i] + MIN_LENGTH) * 2));
 
-                        heavy_hitters[length[i]].insert(sequence & mask);
+                        heavy_hitters[length[i]][sequence & mask] = min_hits[i].i[0];
                     }
                 }
             }
         }
 
         // Check if no more sequences fit on the remainder of the line
-        if (m < MIN_LENGTH) {
+        if (m - 4 < MIN_LENGTH) {
             n += m + 1;
         }
         else {
             n += 4;
         }
     }
+}
 
-    std::clog << "Sequences checked:" << count << std::endl;
+
+void control(
+        MappedFile* control_file,
+        int data_start,
+        int data_end,
+        std::unordered_map<uint64_t, int>* heavy_hitters) {
+
+    // Adjust start and end positions to line endings
+    const char* data = control_file->data();
+    int n = data_start;
+    while (n > 0 && data[n - 1] != '\n')
+        n++;
+
+    int end = data_end < control_file->size() ? data_end : control_file->size();
+    while (n < control_file->size() && data[n] != '\n')
+        n++;
+
+    uint64_t sequence = 0;
+    int length = 0;
+
+    for (; n < end; n++) {
+        // Skip comment lines
+        if (data[n] == '>') {
+            while (n < end && data[n] != '\n') {
+                n++;
+            }
+            continue;
+        }
+
+        sequence <<= 2;
+        length++;
+
+        // Convert symbol to binary representation
+        if (data[n] == 'A') {
+            sequence |= 0;
+        }
+        else if (data[n] == 'C') {
+            sequence |= 1;
+        }
+        else if (data[n] == 'T') {
+            sequence |= 2;
+        }
+        else if (data[n] == 'G') {
+            sequence |= 3;
+        }
+        else {
+            length = 0;
+            sequence = 0;
+            continue;
+        }
+
+        if (length >= MIN_LENGTH) {
+            int max_l = length - MIN_LENGTH + 1;
+            max_l = max_l < N_LENGTH ? max_l : N_LENGTH;
+
+            uint64_t mask = ~0UL << (MIN_LENGTH * 2);
+            for (int i = 0; i < max_l; i++) {
+                auto hh = heavy_hitters[i].find(sequence & ~mask);
+                if (hh != heavy_hitters[i].end()) {
+                    hh->second--;
+                }
+
+                mask <<= 2;
+            }
+        }
+    }
 }
 
 
@@ -247,29 +315,53 @@ int main(int argc, char* argv[]) {
     // Start time measurement
     auto start = std::chrono::steady_clock::now();
 
-    std::unordered_set<unsigned long> heavy_hitters[N_LENGTH];
-    std::thread worker_threads[N_LENGTH];
+    std::unordered_map<uint64_t, int> heavy_hitters[N_LENGTH];
 
-    // for (int n = 0; n < 1; n++) {
-    //     worker_threads[n] = std::thread(
-    //         hashWorker,
-    //         &test_file,
-    //         &control_file,
-    //         sym_seeds,
-    //         &heavy_hitters[0]
-    //     );
-    // }
-
-    // for (int n = 0; n < 1; n++) {
-    //     worker_threads[n].join();
-    // }
-    hashWorker(
+    countminCu(
         sym_seeds,
         &sketch[0],
         &test_file,
-        &control_file,
+        0,
+        test_file.size(),
         &heavy_hitters[0]
     );
+
+    // Scale frequencies by the growth factor
+    for (int i = 0; i < N_LENGTH; i++) {
+        for (auto& j : heavy_hitters[i]) {
+            j.second /= GROWTH;
+        }
+    }
+
+    // Execute control step
+    int n_threads = std::thread::hardware_concurrency();
+    std::thread* control_threads = new std::thread[n_threads];
+
+    int data_stride = (control_file.size() + n_threads - 1) / n_threads;
+
+    for (int i = 0; i < n_threads; i++) {
+        control_threads[i] = std::thread(
+            control,
+            &control_file,
+            i * data_stride,
+            (i + 1) * data_stride,
+            &heavy_hitters[0]);
+    }
+
+    for (int i = 0; i < n_threads; i++) {
+        control_threads[i].join();
+    }
+
+    // Erase heavy-hitters in control set
+    for (int i = 0; i < N_LENGTH; i++) {
+        auto j = heavy_hitters[i].begin();
+        while (j != heavy_hitters[i].end()) {
+            if (j->second <= 0)
+                j = heavy_hitters[i].erase(j);
+            else
+                j++;
+        }
+    }
 
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = end - start;
@@ -287,7 +379,7 @@ int main(int argc, char* argv[]) {
 
         for (auto x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x, MIN_LENGTH + n) << std::endl;
+                << sequenceToString(x.first, MIN_LENGTH + n) << std::endl;
         }
     }
 

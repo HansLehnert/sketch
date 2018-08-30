@@ -1,6 +1,6 @@
 G++ = g++
 NVCC = nvcc
-CPP_FLAGS = -std=c++11 -O0 -g -pthread
+CPP_FLAGS = -std=c++11 -O3 -pthread
 AVX_FLAGS = -mavx -mavx2
 CU_FLAGS = -std=c++11 -O3
 MKDIR = mkdir -p
