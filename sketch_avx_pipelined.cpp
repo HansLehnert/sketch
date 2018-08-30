@@ -90,7 +90,7 @@ void hashWorker(
     while (n < end) {
         // Skip comment lines
         if (data[n] == '>') {
-            while (data[n] != '\n' && n < end) {
+            while (n < end && data[n] != '\n') {
                 n++;
             }
             n++;
@@ -102,7 +102,8 @@ void hashWorker(
 
         uint64_t sequence = 0;
 
-        for (int m = 0; m < MAX_LENGTH + 3; m++) {
+        int m;
+        for (m = 0; m < MAX_LENGTH + 3; m++) {
             uint_fast8_t symbol;
 
             // Convert symbol to binary representation
@@ -128,7 +129,7 @@ void hashWorker(
             if (symbol != 0) {  // Symbol 0 hashes with all zeros so we skip it
                 vec256 seed_vec;
                 seed_vec.v = _mm256_lddqu_si256(
-                    (__m256i*)&seeds.values[symbol][m][0]);
+                    (__m256i*)&seeds.values[symbol][m]);
                 hash_vec.v = _mm256_xor_si256(hash_vec.v, seed_vec.v);
             }
 
@@ -136,8 +137,8 @@ void hashWorker(
             if (m + 1 >= MIN_LENGTH) {
                 vec128 hash[4];
                 vec128 hits[4];
-                vec128 min_hits[4];
                 int length[4];
+                vec128 min_hits[4];
 
                 count++;
 
@@ -150,7 +151,6 @@ void hashWorker(
 
                 // Find the minimum counts
                 for (int i = 0; i < 4; i++) {
-
                     if (write_flag[i]) {
                         hash[i].v = _mm_unpacklo_epi16(
                             hash_vec.lo.v, _mm_setzero_si128());
@@ -160,7 +160,7 @@ void hashWorker(
 
                         // Compute the minimum counter value
                         vec128 min_tmp1, min_tmp2;
-                        min_tmp1.v = _mm_shuffle_epi32(hits[i].v, 0b01001101);
+                        min_tmp1.v = _mm_shuffle_epi32(hits[i].v, 0b01001110);
                         min_tmp1.v = _mm_min_epi32(hits[i].v, min_tmp1.v);
                         min_tmp2.v = _mm_shuffle_epi32(min_tmp1.v, 0b10110001);
                         min_hits[i].v = _mm_min_epi32(min_tmp1.v, min_tmp2.v);
@@ -171,12 +171,14 @@ void hashWorker(
 
                 // Update the counts
                 for (int i = 0; i < 4; i++) {
-                    vec128 cmp;
-                    cmp.v = _mm_cmpeq_epi32(hits[i].v, min_hits[i].v);
+                    if (write_flag[i]) {
+                        vec128 cmp;
+                        cmp.v = _mm_cmpeq_epi32(hits[i].v, min_hits[i].v);
 
-                    for (int j = 0; j < N_HASH; j++) {
-                        if (write_flag[i] && cmp.i[j]) {
-                            sketch[length[i]].count[0][hash[i].i[j]]++;
+                        for (int j = 0; j < N_HASH; j++) {
+                            if (cmp.i[j]) {
+                                sketch[length[i]].count[0][hash[i].i[j]]++;
+                            }
                         }
                     }
                 }
@@ -184,7 +186,7 @@ void hashWorker(
                 // Add sequences which go over the threshold to the results
                 for (int i = 0; i < 4; i++) {
                     if (write_flag[i] &&
-                            min_hits[i].i[0] == THRESHOLD[length[i]]) {
+                            min_hits[i].i[0] + 1 == THRESHOLD[length[i]]) {
                         // Mask to extract the correct length sequence
                         uint64_t mask;
                         mask = ~(~0UL << ((length[i] + MIN_LENGTH) * 2));
@@ -195,7 +197,13 @@ void hashWorker(
             }
         }
 
-        n += 4;
+        // Check if no more sequences fit on the remainder of the line
+        if (m < MIN_LENGTH) {
+            n += m + 1;
+        }
+        else {
+            n += 4;
+        }
     }
 
     std::clog << "Sequences checked:" << count << std::endl;
