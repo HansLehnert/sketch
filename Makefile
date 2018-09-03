@@ -9,8 +9,7 @@ USE_CUDA := $(shell command -v nvcc 2> /dev/null)
 USE_AVX := $(shell grep avx2 /proc/cpuinfo)
 
 
-# EXECUTABLES += sketch
-EXECUTABLES += sketch_mmap
+EXECUTABLES += sketch
 EXECUTABLES += sketch_multithread
 
 ifdef USE_AVX
@@ -32,29 +31,13 @@ all: $(addprefix bin/, $(EXECUTABLES))
 
 run: all
 	@$(MKDIR) out/
-# 	./bin/sketch_mmap $(DATASET) > out/mmap.txt
-# 	./bin/sketch_multithread $(DATASET) > out/multithread.txt
-# ifdef USE_AVX
-# # ./bin/sketch_avx $(DATASET) > out/avx.txt
-# # ./bin/sketch_avx_multithread $(DATASET) > out/avx_mutithread.tx
-# # ./bin/sketch_avx_multithread_approx $(DATASET) > out/avx_multithread_approx.txt
-# endif
-# ifdef USE_CUDA
-# 	./bin/sketch_cu $(DATASET) > out/cuda.txt
-# 	./bin/sketch_cu_pipelined $(DATASET) > out/cuda_pipelined.txt
-# # ./bin/sketch_cu_approx $(DATASET) > out/cuda_approx.txt
-# endif
 	@$(foreach exec, $(EXECUTABLES), echo $(exec);./bin/$(exec) $(DATASET) > out/$(exec).txt;)
 
 bin/%.o: %.cpp
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) -c $^ -o $@
 
-bin/sketch: sketch.cpp bin/fasta.o
-	@$(MKDIR) $(@D)
-	$(G++) $(CPP_FLAGS) $^ -o $@
-
-bin/sketch_mmap: sketch_mmap.cpp bin/fasta.o bin/MappedFile.o
+bin/sketch: sketch.cpp bin/fasta.o bin/MappedFile.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $^ -o $@
 
