@@ -22,6 +22,12 @@ std::vector<unsigned long> parseFasta(std::istream& input, int length);
 std::vector<unsigned long> parseFasta(
     const char* data, int data_length, int sequence_length);
 
+std::vector<unsigned long> parseFasta(
+    const char* data,
+    int data_length,
+    int sequence_length,
+    unsigned long mask);
+
 
 /**
  * @brief Convert a k-mer stored as binary to it's string representation

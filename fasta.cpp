@@ -52,10 +52,21 @@ std::vector<unsigned long> parseFasta(std::istream& input, int length) {
 
 std::vector<unsigned long> parseFasta(
         const char* data, int data_size, int sequence_length) {
+    unsigned long mask = ~(~0UL << (sequence_length * 2));
+
+    return parseFasta(data, data_size, sequence_length, mask);
+}
+
+
+
+std::vector<unsigned long> parseFasta(
+        const char* data,
+        int data_size,
+        int sequence_length,
+        unsigned long mask) {
     std::vector<unsigned long> data_vectors;
     data_vectors.reserve(data_size);
 
-    unsigned long mask = ~0UL >> (64 - sequence_length * 2);
     unsigned long sequence = 0;
     int parsed = 0;
     bool skip_line = false;
@@ -89,10 +100,8 @@ std::vector<unsigned long> parseFasta(
                 break;
             }
 
-            sequence &= mask;
-
             if (++parsed >= sequence_length) {
-                data_vectors.push_back(sequence);
+                data_vectors.push_back(sequence & mask);
             }
         }
     }

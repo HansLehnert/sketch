@@ -33,11 +33,22 @@ const unsigned int N_HASH = 4;
 const unsigned int HASH_BITS = 14;
 
 // Thresholds for use in heavy-hitters detection in sketch frequencies
-constexpr unsigned int THRESHOLD[] = {
-    365, 308, 257, 161, 150, 145, 145, 145, 145, 145, 145};
+// constexpr unsigned int THRESHOLD[] = {
+//     365, 308, 257, 161, 150, 145, 145, 145, 145, 145, 145};
 
 // Growth parameter for control step
 const float GROWTH = 2;
+
+
+struct SketchSettings {
+    int min_length;
+    int max_length;
+    int n_length;
+
+    std::vector<int> threshold;
+
+    float growth;
+};
 
 
 struct Seeds {
@@ -74,6 +85,7 @@ void countminCu(
         const Seeds& seeds,
         Sketch* sketch,
         MappedFile* test_file,
+        std::vector<int>& threshold,
         int data_start,
         int data_end,
         std::unordered_map<uint64_t, int>* heavy_hitters) {
@@ -188,7 +200,7 @@ void countminCu(
                 // Add sequences which go over the threshold to the results
                 for (int i = 0; i < 4; i++) {
                     if (write_flag[i] &&
-                            min_hits[i].i[0] + 1 >= THRESHOLD[length[i]]) {
+                            min_hits[i].i[0] + 1 >= threshold[length[i]]) {
                         // Mask to extract the correct length sequence
                         uint64_t mask;
                         mask = ~(~0UL << ((length[i] + MIN_LENGTH) * 2));
@@ -279,11 +291,17 @@ void control(
 
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
+    if (argc < 14) {
         std::cout
             << "Usage:" << std::endl
-            << '\t' << argv[0] << " test_set control_set" << std::endl;
+            << '\t' << argv[0] << " test_set control_set threshold_1 ..." << std::endl;
         return 1;
+    }
+
+    // Read thresholds from arguments
+    std::vector<int> thresholds;
+    for (int i = 3; i < argc; i++) {
+        thresholds.push_back(atoi(argv[i]));
     }
 
     // Generate random seeds
@@ -313,7 +331,7 @@ int main(int argc, char* argv[]) {
     MappedFile control_file = MappedFile::load(argv[2]);
 
     // Start time measurement
-    auto start = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
 
     std::unordered_map<uint64_t, int> heavy_hitters[N_LENGTH];
 
@@ -321,6 +339,7 @@ int main(int argc, char* argv[]) {
         sym_seeds,
         &sketch[0],
         &test_file,
+        thresholds,
         0,
         test_file.size(),
         &heavy_hitters[0]
@@ -332,6 +351,8 @@ int main(int argc, char* argv[]) {
             j.second /= GROWTH;
         }
     }
+
+    auto test_time = std::chrono::steady_clock::now();
 
     // Execute control step
     int n_threads = std::thread::hardware_concurrency();
@@ -363,10 +384,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> diff = end - start;
+    auto end_time = std::chrono::steady_clock::now();
+    std::chrono::duration<double> test_diff = test_time - start_time;
+    std::chrono::duration<double> control_diff = end_time - test_time;
+    std::chrono::duration<double> total_diff = end_time - start_time;
 
-    std::clog << "Execution time: " << diff.count() << " s" << std::endl;
+    std::clog << "Test time: " << test_diff.count() << " s" << std::endl;
+    std::clog << "Control time: " << control_diff.count() << " s" << std::endl;
+    std::clog << "Total time: " << total_diff.count() << " s" << std::endl;
 
     // Print heavy-hitters
     int heavy_hitters_count = 0;
