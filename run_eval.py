@@ -22,10 +22,10 @@ else:
 # Programs to check
 programs = []
 
-# programs.append('bin/sketch')
+programs.append('bin/sketch')
 
-# if use_avx:
-#     programs.append('bin/sketch_avx_pipelined')
+if use_avx:
+    programs.append('bin/sketch_avx_pipelined')
 
 if use_cuda:
     programs.append('bin/sketch_cu')
@@ -128,9 +128,6 @@ for program_name in programs:
                         runs[measurement_name].append(value)
 
             print('.', end='', flush=True)
-            if i == n_runs - 1:
-                print('')
-                print(result.stderr, end='', flush=True)
         print('')
 
     output_filename = 'out/result_{}.csv'.format(program_name.split('/')[-1])
