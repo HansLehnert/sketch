@@ -104,8 +104,8 @@ int main(int argc, char* argv[]) {
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
-    std::unordered_set<unsigned long>* heavy_hitters;
-    heavy_hitters = new std::unordered_set<unsigned long>[settings.n_length];
+    std::vector<std::unordered_set<unsigned long>> heavy_hitters;
+    heavy_hitters.resize(settings.n_length);
 
     for (int n = 0; n < settings.n_length; n++) {
         int length = settings.min_length + n;
@@ -196,6 +196,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
+
+    delete[] seeds_values;
 
     return 0;
 }

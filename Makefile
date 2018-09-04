@@ -25,7 +25,10 @@ ifdef USE_CUDA
 	# EXECUTABLES += sketch_cu_approx
 endif
 
-DATASET = ./data/test.fasta ./data/control.fasta
+DATASET = \
+	./data/test.fasta \
+	./data/control.fasta \
+	10 20 365 308 257 161 150 145 145 145 145 145 145
 
 all: $(addprefix bin/, $(EXECUTABLES))
 

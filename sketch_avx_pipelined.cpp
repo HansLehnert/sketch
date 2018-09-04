@@ -326,14 +326,12 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-    for (int i = 0; i < 4 * (settings.max_length + 6) * N_HASH; i++) {
-        std::cout << sym_seeds[i] << ",";
-    }
-    std::cout << std::endl;
 
     // Create sketches
-    Sketch* sketch = new Sketch[settings.n_length];
-    memset(sketch, 0, sizeof(Sketch) * settings.n_length);
+    std::vector<Sketch> sketch;
+    sketch.resize(settings.n_length);
+    for (int i = 0; i < sketch.size(); i++)
+        memset(&sketch[i], 0, sizeof(Sketch));
 
     // Load memory mapped files
     MappedFile test_file = MappedFile::load(argv[1]);
@@ -342,17 +340,17 @@ int main(int argc, char* argv[]) {
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
-    std::unordered_map<uint64_t, int>* heavy_hitters;
-    heavy_hitters = new std::unordered_map<uint64_t, int>[settings.n_length];
+    std::vector<std::unordered_map<uint64_t, int>> heavy_hitters;
+    heavy_hitters.resize(settings.n_length);
 
     countminCu(
         settings,
         sym_seeds,
-        sketch,
+        &sketch[0],
         &test_file,
         0,
         test_file.size(),
-        heavy_hitters
+        &heavy_hitters[0]
     );
 
     auto test_time = std::chrono::steady_clock::now();
@@ -366,18 +364,19 @@ int main(int argc, char* argv[]) {
 
     // Execute control step
     int n_threads = std::thread::hardware_concurrency();
-    std::thread* control_threads = new std::thread[n_threads];
+    std::vector<std::thread> control_threads;
+    control_threads.reserve(n_threads);
 
     int data_stride = (control_file.size() + n_threads - 1) / n_threads;
 
     for (int i = 0; i < n_threads; i++) {
-        control_threads[i] = std::thread(
+        control_threads.emplace_back(
             control,
             settings,
             &control_file,
             i * data_stride,
             (i + 1) * data_stride,
-            heavy_hitters);
+            &heavy_hitters[0]);
     }
 
     for (int i = 0; i < n_threads; i++) {
@@ -415,11 +414,16 @@ int main(int argc, char* argv[]) {
 
         for (auto x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x.first, settings.min_length + n) << std::endl;
+                << sequenceToString(x.first, settings.min_length + n)
+                << std::endl;
         }
     }
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
+
+    // Free allocated memory
+    delete[] base_seeds;
+    delete[] sym_seeds;
 
     return 0;
 }

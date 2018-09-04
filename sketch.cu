@@ -19,6 +19,7 @@
 
 #include "fasta.hpp"
 #include "MappedFile.hpp"
+#include "cuda_error.h"
 
 
 struct SketchSettings {
@@ -106,33 +107,32 @@ void hashWorker(
 
     // Transfer data to device
     unsigned long n_data = data_vectors.size();
-    unsigned long* h_data;
+    // unsigned long* h_data;
     unsigned long* d_data;
-    cudaHostAlloc(
-        &h_data, n_data * sizeof(unsigned long), cudaHostAllocWriteCombined);
-    cudaMemcpyAsync(
-        h_data,
-        data_vectors.data(),
-        n_data * sizeof(unsigned long),
-        cudaMemcpyHostToHost,
-        stream);
+    // cudaHostAlloc(
+    //     &h_data, n_data * sizeof(unsigned long), cudaHostAllocWriteCombined);
+    // cudaMemcpyAsync(
+    //     h_data,
+    //     data_vectors.data(),
+    //     n_data * sizeof(unsigned long),
+    //     cudaMemcpyHostToHost,
+    //     stream);
 
     cudaMalloc(&d_data, n_data * sizeof(unsigned long));
-    cudaMemcpyAsync(
+    cudaMemcpy(
         d_data,
-        h_data,
+        data_vectors.data(),
         n_data * sizeof(unsigned long),
-        cudaMemcpyHostToDevice,
-        stream);
+        cudaMemcpyHostToDevice);
 
     // Hash values
     unsigned short* d_hashes;
-    unsigned short* h_hashes;
+    unsigned short* h_hashes = new unsigned short[N_HASH * n_data];
     cudaMalloc(&d_hashes, N_HASH * n_data * sizeof(unsigned short));
-    cudaHostAlloc(
-        &h_hashes,
-        N_HASH * n_data * sizeof(unsigned short),
-        cudaHostAllocDefault);
+    // gpuErrchk(cudaHostAlloc(
+    //     &h_hashes,
+    //     N_HASH * n_data * sizeof(unsigned short),
+    //     cudaHostAllocDefault));
 
     int block_size = 128;
     int num_blocks = (n_data + block_size - 1) / block_size;
@@ -146,11 +146,9 @@ void hashWorker(
         h_hashes,
         d_hashes,
         N_HASH * n_data * sizeof(unsigned short),
-        cudaMemcpyDeviceToHost,
-        stream);
+        cudaMemcpyDeviceToHost);
 
     cudaStreamSynchronize(stream);
-
     cudaStreamDestroy(stream);
 
     // Find heavy-hitters
@@ -210,8 +208,9 @@ void hashWorker(
 
     cudaFree(d_data);
     cudaFree(d_hashes);
-    cudaFreeHost(h_data);
-    cudaFreeHost(h_hashes);
+    // cudaFreeHost(h_data);
+    // cudaFreeHost(h_hashes);
+    delete[] h_hashes;
 }
 
 
@@ -259,17 +258,18 @@ int main(int argc, char* argv[]) {
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
-    std::unordered_set<unsigned long>* heavy_hitters;
-    heavy_hitters = new std::unordered_set<unsigned long>[settings.n_length];
+    std::vector<std::unordered_set<unsigned long>> heavy_hitters;
+    heavy_hitters.resize(settings.n_length);
 
-    std::thread* worker_threads;
-    worker_threads = new std::thread[settings.n_length];
+    int n_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> worker_threads;
+    worker_threads.reserve(n_threads);
 
     int device_count;
     cudaGetDeviceCount(&device_count);
 
-    for (int n = 0; n < settings.n_length; n++) {
-        worker_threads[n] = std::thread(
+    for (int n = 0; n < n_threads; n++) {
+        worker_threads.emplace_back(
             hashWorker,
             settings,
             &test_file,
@@ -280,7 +280,7 @@ int main(int argc, char* argv[]) {
             0);
     }
 
-    for (int n = 0; n < settings.n_length; n++) {
+    for (int n = 0; n < worker_threads.size(); n++) {
         worker_threads[n].join();
     }
 
