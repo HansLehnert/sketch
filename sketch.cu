@@ -21,15 +21,22 @@
 #include "MappedFile.hpp"
 
 
-const unsigned int MIN_LENGTH = 10;
-const unsigned int MAX_LENGTH = 20;
-const unsigned int N_LENGTH = MAX_LENGTH - MIN_LENGTH + 1;
+struct SketchSettings {
+    int min_length;
+    int max_length;
+    int n_length;
+
+    std::vector<int> threshold;
+
+    float growth;
+};
+
+
+const unsigned int MAX_LENGTH = 28;
 
 const unsigned int N_HASH = 4;
 const unsigned int HASH_BITS = 14;
 
-constexpr unsigned int THRESHOLD[] = {
-    365, 308, 257, 161, 150, 145, 145, 145, 145, 145, 145};
 const float GROWTH = 2;
 
 
@@ -77,6 +84,7 @@ __global__ void hashH3(
 
 
 void hashWorker(
+        SketchSettings settings,
         MappedFile* test_file,
         MappedFile* control_file,
         std::unordered_set<unsigned long>* heavy_hitters,
@@ -208,11 +216,34 @@ void hashWorker(
 
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cout
+    if (argc < 5) {
+        std::cerr
             << "Usage:" << std::endl
-            << '\t' << argv[0] << " test_set control_set" << std::endl;
+            << '\t' << argv[0]
+            << " test_set control_set min_length max_length threshold_1 ..."
+            << std::endl;
         return 1;
+    }
+
+    // Configure sketch settings
+    SketchSettings settings;
+    settings.min_length = atoi(argv[3]);
+    settings.max_length = atoi(argv[4]);
+    settings.n_length = settings.max_length - settings.min_length + 1;
+    settings.growth = 2.0;
+
+    if (argc - 5 < settings.n_length) {
+        std::cerr
+            << "Missing threshold values. Got "
+            << argc - 5
+            << ", expected "
+            << settings.n_length
+            << std::endl;
+        return 1;
+    }
+
+    for (int i = 5; i < argc; i++) {
+        settings.threshold.push_back(atoi(argv[i]));
     }
 
     // Generate seeds
@@ -226,47 +257,53 @@ int main(int argc, char* argv[]) {
     MappedFile control_file = MappedFile::load(argv[2]);
 
     // Start time measurement
-    auto start = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
 
-    std::unordered_set<unsigned long> heavy_hitters[N_LENGTH];
-    std::thread worker_threads[N_LENGTH];
+    std::unordered_set<unsigned long>* heavy_hitters;
+    heavy_hitters = new std::unordered_set<unsigned long>[settings.n_length];
+
+    std::thread* worker_threads;
+    worker_threads = new std::thread[settings.n_length];
 
     int device_count;
     cudaGetDeviceCount(&device_count);
 
-    for (int n = 0; n < N_LENGTH; n++) {
+    for (int n = 0; n < settings.n_length; n++) {
         worker_threads[n] = std::thread(
             hashWorker,
+            settings,
             &test_file,
             &control_file,
             &heavy_hitters[n],
-            MIN_LENGTH + n,
-            THRESHOLD[n],
+            settings.min_length + n,
+            settings.threshold[n],
             0);
     }
 
-    for (int n = 0; n < N_LENGTH; n++) {
+    for (int n = 0; n < settings.n_length; n++) {
         worker_threads[n].join();
     }
 
     // End time measurement
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> diff = end - start;
+    auto end_time = std::chrono::steady_clock::now();
+    std::chrono::duration<double> diff_total = end_time - start_time;
 
-    std::clog << "Execution time: " << diff.count() << " s" << std::endl;
+    std::clog << "Execution time: " << diff_total.count() << " s" << std::endl;
 
     // Print heavy-hitters
     int heavy_hitters_count = 0;
 
-    for (int n = 0; n < N_LENGTH; n++) {
+    for (int n = 0; n < settings.n_length; n++) {
         heavy_hitters_count += heavy_hitters[n].size();
         std::clog
-            << "Heavy-hitters (length " << MIN_LENGTH + n << "): "
+            << "Heavy-hitters (length " << settings.min_length + n << "): "
             << heavy_hitters[n].size() << std::endl;
 
 
         for (auto x : heavy_hitters[n]) {
-            std::cout << sequenceToString(x, MIN_LENGTH + n) << std::endl;
+            std::cout
+                << sequenceToString(x, settings.min_length + n)
+                << std::endl;
         }
     }
 

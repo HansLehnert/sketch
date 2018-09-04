@@ -20,16 +20,25 @@
 #include "MappedFile.hpp"
 
 
-const unsigned int MIN_LENGTH = 10;
-const unsigned int MAX_LENGTH = 20;
-const unsigned int N_LENGTH = MAX_LENGTH - MIN_LENGTH + 1;
-
+// Number of hashes to use in the sketch
 const unsigned int N_HASH = 4;
+
+// Number of bits for the hashing seeds. Also determines the sketch size.
 const unsigned int HASH_BITS = 14;
 
-const unsigned int THRESHOLD[] = {
-    365, 308, 257, 161, 150, 145, 145, 145, 145, 145, 145};
+// Growth parameter for control step
 const float GROWTH = 2;
+
+
+struct SketchSettings {
+    int min_length;
+    int max_length;
+    int n_length;
+
+    std::vector<int> threshold;
+
+    float growth;
+};
 
 
 /**
@@ -47,17 +56,43 @@ unsigned int hashH3(unsigned long key, unsigned short* seeds, int bits) {
 
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cout
+    if (argc < 5) {
+        std::cerr
             << "Usage:" << std::endl
-            << '\t' << argv[0] << " test_set control_set" << std::endl;
+            << '\t' << argv[0]
+            << " test_set control_set min_length max_length threshold_1 ..."
+            << std::endl;
         return 1;
     }
 
+    // Configure sketch settings
+    SketchSettings settings;
+    settings.min_length = atoi(argv[3]);
+    settings.max_length = atoi(argv[4]);
+    settings.n_length = settings.max_length - settings.min_length + 1;
+    settings.growth = 2.0;
+
+    if (argc - 5 < settings.n_length) {
+        std::cerr
+            << "Missing threshold values. Got "
+            << argc - 5
+            << ", expected "
+            << settings.n_length
+            << std::endl;
+        return 1;
+    }
+
+    for (int i = 5; i < argc; i++) {
+        settings.threshold.push_back(atoi(argv[i]));
+    }
+
     // Generate seeds
-    unsigned short seeds[N_HASH][MAX_LENGTH * 2];
+    unsigned short* seeds[N_HASH];
+    unsigned short* seeds_values;
+    seeds_values = new unsigned short[N_HASH * settings.max_length * 2];
     for (unsigned int i = 0; i < N_HASH; i++) {
-        for (unsigned int j = 0; j < MAX_LENGTH * 2; j++) {
+        seeds[i] = &seeds_values[settings.max_length * 2 * i];
+        for (unsigned int j = 0; j < settings.max_length * 2; j++) {
             seeds[i][j] = rand() & ((1 << HASH_BITS) - 1);
         }
     }
@@ -67,12 +102,13 @@ int main(int argc, char* argv[]) {
     MappedFile control_file = MappedFile::load(argv[2]);
 
     // Start time measurement
-    auto start = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
 
-    std::unordered_set<unsigned long> heavy_hitters[N_LENGTH];
+    std::unordered_set<unsigned long>* heavy_hitters;
+    heavy_hitters = new std::unordered_set<unsigned long>[settings.n_length];
 
-    for (int n = 0; n < N_LENGTH; n++) {
-        int length = MIN_LENGTH + n;
+    for (int n = 0; n < settings.n_length; n++) {
+        int length = settings.min_length + n;
 
         // Create sketch
         unsigned int sketch[N_HASH][1 << HASH_BITS] = {0};
@@ -101,7 +137,7 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            if (min_hits + 1 == THRESHOLD[n]) {
+            if (min_hits + 1 == settings.threshold[n]) {
                 heavy_hitters[n].insert(data_vectors[i]);
             }
         }
@@ -139,22 +175,23 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> diff = end - start;
+    auto end_time = std::chrono::steady_clock::now();
+    std::chrono::duration<double> total_diff = end_time - start_time;
 
-    std::clog << "Execution time: " << diff.count() << " s" << std::endl;
+    std::clog << "Total time: " << total_diff.count() << " s" << std::endl;
 
     // Print heavy-hitters
     int heavy_hitters_count = 0;
 
-    for (int n = 0; n < N_LENGTH; n++) {
+    for (int n = 0; n < settings.n_length; n++) {
         heavy_hitters_count += heavy_hitters[n].size();
         std::clog
-            << "Heavy-hitters (length " << MIN_LENGTH + n << "): "
+            << "Heavy-hitters (length " << settings.min_length + n << "): "
             << heavy_hitters[n].size() << std::endl;
 
         for (auto x : heavy_hitters[n]) {
-            std::cout << sequenceToString(x, MIN_LENGTH + n) << std::endl;
+            std::cout
+                << sequenceToString(x, settings.min_length + n) << std::endl;
         }
     }
 

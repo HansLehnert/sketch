@@ -9,6 +9,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -21,20 +22,12 @@
 #include "fasta.hpp"
 #include "MappedFile.hpp"
 
-// K-mers lengths
-const unsigned int MIN_LENGTH = 10;
-const unsigned int MAX_LENGTH = 20;
-const unsigned int N_LENGTH = MAX_LENGTH - MIN_LENGTH + 1;
 
 // Number of hashes to use in the sketch
 const unsigned int N_HASH = 4;
 
 // Number of bits for the hashing seeds. Also determines the sketch size.
 const unsigned int HASH_BITS = 14;
-
-// Thresholds for use in heavy-hitters detection in sketch frequencies
-// constexpr unsigned int THRESHOLD[] = {
-//     365, 308, 257, 161, 150, 145, 145, 145, 145, 145, 145};
 
 // Growth parameter for control step
 const float GROWTH = 2;
@@ -48,12 +41,6 @@ struct SketchSettings {
     std::vector<int> threshold;
 
     float growth;
-};
-
-
-struct Seeds {
-    uint16_t values[4][MAX_LENGTH + 6][N_HASH];
-    // 4 symbols (ACTG) and 3 pre and post padding seeds;
 };
 
 
@@ -82,10 +69,10 @@ union vec256 {
 
 
 void countminCu(
-        const Seeds& seeds,
+        const SketchSettings settings,
+        const uint16_t* seeds,
         Sketch* sketch,
         MappedFile* test_file,
-        std::vector<int>& threshold,
         int data_start,
         int data_end,
         std::unordered_map<uint64_t, int>* heavy_hitters) {
@@ -119,7 +106,7 @@ void countminCu(
         uint64_t sequence = 0;
 
         int m;
-        for (m = 0; m < MAX_LENGTH + 3; m++) {
+        for (m = 0; m < settings.max_length + 3; m++) {
             uint_fast8_t symbol;
 
             // Convert symbol to binary representation
@@ -145,12 +132,12 @@ void countminCu(
             if (symbol != 0) {  // Symbol 0 hashes with all zeros so we skip it
                 vec256 seed_vec;
                 seed_vec.v = _mm256_lddqu_si256(
-                    (__m256i*)&seeds.values[symbol][m]);
+                    (__m256i*)&seeds[symbol * N_HASH * (settings.max_length + 6) + m * N_HASH]);
                 hash_vec.v = _mm256_xor_si256(hash_vec.v, seed_vec.v);
             }
 
             // Add to sketch
-            if (m + 1 >= MIN_LENGTH) {
+            if (m + 1 >= settings.min_length) {
                 vec128 hash[4];
                 vec128 hits[4];
                 int length[4];
@@ -159,8 +146,8 @@ void countminCu(
                 // Calculate sequence length of each of the parallel hashes
                 uint_fast8_t write_flag[4];
                 for (int i = 0; i < 4; i++) {
-                    length[i] = m - 2 + i - MIN_LENGTH;
-                    write_flag[i] = length[i] >= 0 && length[i] < N_LENGTH;
+                    length[i] = m - 2 + i - settings.min_length;
+                    write_flag[i] = length[i] >= 0 && length[i] < settings.n_length;
                 }
 
                 // Find the minimum counts
@@ -200,10 +187,10 @@ void countminCu(
                 // Add sequences which go over the threshold to the results
                 for (int i = 0; i < 4; i++) {
                     if (write_flag[i] &&
-                            min_hits[i].i[0] + 1 >= threshold[length[i]]) {
+                            min_hits[i].i[0] + 1 >= settings.threshold[length[i]]) {
                         // Mask to extract the correct length sequence
                         uint64_t mask;
-                        mask = ~(~0UL << ((length[i] + MIN_LENGTH) * 2));
+                        mask = ~(~0UL << ((length[i] + settings.min_length) * 2));
 
                         heavy_hitters[length[i]][sequence & mask] = min_hits[i].i[0];
                     }
@@ -212,7 +199,7 @@ void countminCu(
         }
 
         // Check if no more sequences fit on the remainder of the line
-        if (m - 4 < MIN_LENGTH) {
+        if (m - 4 < settings.min_length) {
             n += m + 1;
         }
         else {
@@ -223,6 +210,7 @@ void countminCu(
 
 
 void control(
+        const SketchSettings& settings,
         MappedFile* control_file,
         int data_start,
         int data_end,
@@ -272,11 +260,11 @@ void control(
             continue;
         }
 
-        if (length >= MIN_LENGTH) {
-            int max_l = length - MIN_LENGTH + 1;
-            max_l = max_l < N_LENGTH ? max_l : N_LENGTH;
+        if (length >= settings.min_length) {
+            int max_l = length - settings.min_length + 1;
+            max_l = max_l < settings.n_length ? max_l : settings.n_length;
 
-            uint64_t mask = ~0UL << (MIN_LENGTH * 2);
+            uint64_t mask = ~0UL << (settings.min_length * 2);
             for (int i = 0; i < max_l; i++) {
                 auto hh = heavy_hitters[i].find(sequence & ~mask);
                 if (hh != heavy_hitters[i].end()) {
@@ -291,40 +279,61 @@ void control(
 
 
 int main(int argc, char* argv[]) {
-    if (argc < 14) {
-        std::cout
+    if (argc < 5) {
+        std::cerr
             << "Usage:" << std::endl
-            << '\t' << argv[0] << " test_set control_set threshold_1 ..." << std::endl;
+            << '\t' << argv[0]
+            << " test_set control_set min_length max_length threshold_1 ..."
+            << std::endl;
         return 1;
     }
 
-    // Read thresholds from arguments
-    std::vector<int> thresholds;
-    for (int i = 3; i < argc; i++) {
-        thresholds.push_back(atoi(argv[i]));
+    // Configure sketch settings
+    SketchSettings settings;
+    settings.min_length = atoi(argv[3]);
+    settings.max_length = atoi(argv[4]);
+    settings.n_length = settings.max_length - settings.min_length + 1;
+    settings.growth = 2.0;
+
+    if (argc - 5 < settings.n_length) {
+        std::cerr
+            << "Missing threshold values. Got "
+            << argc - 5
+            << ", expected "
+            << settings.n_length
+            << std::endl;
+        return 1;
+    }
+
+    for (int i = 5; i < argc; i++) {
+        settings.threshold.push_back(atoi(argv[i]));
     }
 
     // Generate random seeds
-    unsigned short base_seeds[N_HASH][MAX_LENGTH * 2];
-    for (int i = 0; i < N_HASH; i++) {
-        for (int j = 0; j < MAX_LENGTH * 2; j++) {
-            base_seeds[i][j] = rand() & ~(~0U << HASH_BITS);
-        }
+    uint64_t* base_seeds = new uint64_t[N_HASH * settings.max_length * 2];
+    for (int i = 0; i < N_HASH * settings.max_length * 2; i++) {
+        base_seeds[i] = rand() & ~(~0U << HASH_BITS);
     }
 
-    Seeds sym_seeds = {0};
+    uint16_t* sym_seeds = new uint16_t[4 * (settings.max_length + 6) * N_HASH];
+    memset(sym_seeds, 0, 4 * (settings.max_length + 6) * N_HASH * sizeof(uint16_t));
     for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < MAX_LENGTH; j++) {
+        for (int j = 0; j < settings.max_length; j++) {
             for (int k = 0; k < N_HASH; k++) {
-                sym_seeds.values[i][j + 3][k] =
-                    (i & 1 ? base_seeds[k][j * 2] : 0) ^
-                    (i & 2 ? base_seeds[k][j * 2 + 1] : 0);
+                sym_seeds[(settings.max_length + 6) * N_HASH * i + N_HASH * (j + 3) + k] =
+                    (i & 1 ? base_seeds[k * settings.max_length * 2 + j * 2] : 0) ^
+                    (i & 2 ? base_seeds[k * settings.max_length * 2 + j * 2 + 1] : 0);
             }
         }
     }
+    for (int i = 0; i < 4 * (settings.max_length + 6) * N_HASH; i++) {
+        std::cout << sym_seeds[i] << ",";
+    }
+    std::cout << std::endl;
 
     // Create sketches
-    Sketch sketch[N_LENGTH] = {0};
+    Sketch* sketch = new Sketch[settings.n_length];
+    memset(sketch, 0, sizeof(Sketch) * settings.n_length);
 
     // Load memory mapped files
     MappedFile test_file = MappedFile::load(argv[1]);
@@ -333,26 +342,27 @@ int main(int argc, char* argv[]) {
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
-    std::unordered_map<uint64_t, int> heavy_hitters[N_LENGTH];
+    std::unordered_map<uint64_t, int>* heavy_hitters;
+    heavy_hitters = new std::unordered_map<uint64_t, int>[settings.n_length];
 
     countminCu(
+        settings,
         sym_seeds,
-        &sketch[0],
+        sketch,
         &test_file,
-        thresholds,
         0,
         test_file.size(),
-        &heavy_hitters[0]
+        heavy_hitters
     );
 
+    auto test_time = std::chrono::steady_clock::now();
+
     // Scale frequencies by the growth factor
-    for (int i = 0; i < N_LENGTH; i++) {
+    for (int i = 0; i < settings.n_length; i++) {
         for (auto& j : heavy_hitters[i]) {
             j.second /= GROWTH;
         }
     }
-
-    auto test_time = std::chrono::steady_clock::now();
 
     // Execute control step
     int n_threads = std::thread::hardware_concurrency();
@@ -363,10 +373,11 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < n_threads; i++) {
         control_threads[i] = std::thread(
             control,
+            settings,
             &control_file,
             i * data_stride,
             (i + 1) * data_stride,
-            &heavy_hitters[0]);
+            heavy_hitters);
     }
 
     for (int i = 0; i < n_threads; i++) {
@@ -374,7 +385,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Erase heavy-hitters in control set
-    for (int i = 0; i < N_LENGTH; i++) {
+    for (int i = 0; i < settings.n_length; i++) {
         auto j = heavy_hitters[i].begin();
         while (j != heavy_hitters[i].end()) {
             if (j->second <= 0)
@@ -396,15 +407,15 @@ int main(int argc, char* argv[]) {
     // Print heavy-hitters
     int heavy_hitters_count = 0;
 
-    for (int n = 0; n < N_LENGTH; n++) {
+    for (int n = 0; n < settings.n_length; n++) {
         heavy_hitters_count += heavy_hitters[n].size();
         std::clog
-            << "Heavy-hitters (length " << MIN_LENGTH + n << "): "
+            << "Heavy-hitters (length " << settings.min_length + n << "): "
             << heavy_hitters[n].size() << std::endl;
 
         for (auto x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x.first, MIN_LENGTH + n) << std::endl;
+                << sequenceToString(x.first, settings.min_length + n) << std::endl;
         }
     }
 
