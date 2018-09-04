@@ -26,7 +26,8 @@ std::vector<unsigned long> parseFasta(
     const char* data,
     int data_length,
     int sequence_length,
-    unsigned long mask);
+    unsigned long mask,
+    std::vector<unsigned char>* lengths = nullptr);
 
 
 /**

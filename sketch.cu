@@ -14,11 +14,20 @@
 #include <chrono>
 #include <limits>
 #include <thread>
-#include <unordered_set>
+#include <future>
 #include <unordered_map>
 
 #include "fasta.hpp"
 #include "MappedFile.hpp"
+
+
+const unsigned int MAX_LENGTH = 28;
+
+const unsigned int N_HASH = 4;
+const unsigned int HASH_BITS = 14;
+
+// Seeds
+__constant__ uint16_t d_seeds[N_HASH * MAX_LENGTH * 2];
 
 
 struct SketchSettings {
@@ -32,183 +41,135 @@ struct SketchSettings {
 };
 
 
-const unsigned int MAX_LENGTH = 28;
-
-const unsigned int N_HASH = 4;
-const unsigned int HASH_BITS = 14;
-
-const float GROWTH = 2;
-
-
-unsigned short h_seeds[N_HASH * MAX_LENGTH * 2];
-__constant__ unsigned short d_seeds[N_HASH * MAX_LENGTH * 2];
+struct Sketch {
+    int32_t count[N_HASH][1 << HASH_BITS];
+};
 
 
 /**
- * @brief Compute H3 hash
+ * @brief
+ * Compute H3 hash
+ *
+ * Compute the H3 hash on a set of keys using constant memory seeds. Keys are
+ * shifted by the offset, to start the hash.
  */
-unsigned int hashH3(unsigned long key, unsigned short* seeds, int bits) {
-    unsigned int result = 0;
-    for (int i = 0; i < bits; i++) {
-        if (key & 1)
-            result ^= seeds[i];
-        key >>= 1;
-    }
-    return result;
-}
-
-
-/**
- * @brief Compute H3 hash
- */
+template <int n_hash>
 __global__ void hashH3(
-        unsigned int n,
-        unsigned long* keys,
-        unsigned short* hashes,
-        int seed_offset,
-        int bits) {
+        int n,
+        int bits,
+        uint64_t* keys,
+        uint16_t* src,
+        uint16_t* dst,
+        int offset) {
     unsigned int start_index = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int stride = blockDim.x * gridDim.x;
 
     for (unsigned int i = start_index; i < n; i += stride) {
-        unsigned long mask = 1;
-        hashes[i] = 0;
+        for (int j = 0; j < n_hash; j++)
+            dst[i * n_hash + j] = src[i * n_hash + j];
 
+        unsigned long key = keys[i] >> offset;
         for (int j = 0; j < bits; j++) {
-            if (keys[i] & mask)
-                hashes[i] ^= d_seeds[j + seed_offset * MAX_LENGTH * 2];
-            mask <<= 1;
+            if (key & 1) {
+                for (int k = 0; k < n_hash; k++) {
+                    dst[i * n_hash + k] ^=
+                        d_seeds[(j + offset) * n_hash + k];
+                }
+            }
+            key >>= 1;
         }
     }
 }
 
 
-void hashWorker(
-        SketchSettings settings,
-        MappedFile* test_file,
-        MappedFile* control_file,
-        std::unordered_set<unsigned long>* heavy_hitters,
-        int sequence_length,
-        unsigned long threshold,
-        int device = 0) {
+void sketchWorker(
+        const SketchSettings& settings,
+        int start,
+        int stride,
+        const uint16_t* d_hashes,
+        const std::vector<unsigned long>& test_data,
+        const std::vector<unsigned long>& control_data,
+        const std::vector<unsigned char>& test_lengths,
+        const std::vector<unsigned char>& control_lengths,
+        std::vector<std::unordered_map<uint64_t, int>>* heavy_hitters_vec) {
 
-    cudaSetDevice(device);
+    int test_data_size = test_data.size();
+    uint16_t* h_hashes = new uint16_t[N_HASH * test_data_size];
 
-    // Parse data sets
-    std::vector<unsigned long> data_vectors = parseFasta(
-        test_file->data(), test_file->size(), sequence_length);
-    std::vector<unsigned long> control_vectors = parseFasta(
-        control_file->data(), control_file->size(), sequence_length);
+    for (int n = start; n < settings.n_length; n += stride) {
+        uint64_t mask = ~(~0UL << ((settings.min_length + n) * 2));
 
-    // Create stream
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
+        Sketch sketch = {0};
+        int length = settings.min_length + n;
 
-    // Transfer data to device
-    unsigned long n_data = data_vectors.size();
-    // unsigned long* h_data;
-    unsigned long* d_data;
-    // cudaHostAlloc(
-    //     &h_data, n_data * sizeof(unsigned long), cudaHostAllocWriteCombined);
-    // cudaMemcpyAsync(
-    //     h_data,
-    //     data_vectors.data(),
-    //     n_data * sizeof(unsigned long),
-    //     cudaMemcpyHostToHost,
-    //     stream);
+        std::unordered_map<uint64_t, int> heavy_hitters;
 
-    cudaMalloc(&d_data, n_data * sizeof(unsigned long));
-    cudaMemcpy(
-        d_data,
-        data_vectors.data(),
-        n_data * sizeof(unsigned long),
-        cudaMemcpyHostToDevice);
+        // Copy hashes from device
+        cudaMemcpy(
+            h_hashes,
+            &d_hashes[N_HASH * test_data_size * n],
+            N_HASH * test_data_size * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost
+        );
 
-    // Hash values
-    unsigned short* d_hashes;
-    unsigned short* h_hashes = new unsigned short[N_HASH * n_data];
-    cudaMalloc(&d_hashes, N_HASH * n_data * sizeof(unsigned short));
-    // gpuErrchk(cudaHostAlloc(
-    //     &h_hashes,
-    //     N_HASH * n_data * sizeof(unsigned short),
-    //     cudaHostAllocDefault));
+        // Hash values
+        for (int i = 0; i < test_data_size; i++) {
+            if (test_lengths[i] < length)
+                continue;
 
-    int block_size = 128;
-    int num_blocks = (n_data + block_size - 1) / block_size;
+            int min_hits = std::numeric_limits<int>::max();
+            uint16_t* hashes = &h_hashes[i * N_HASH];
 
-    for (unsigned int i = 0; i < N_HASH; i++) {
-        hashH3<<<num_blocks, block_size, 0, stream>>>(
-            n_data, d_data, d_hashes + n_data * i, i, sequence_length * 2);
-    }
+            for (int j = 0; j < N_HASH; j++) {
+                if (sketch.count[j][hashes[j]] < min_hits) {
+                    min_hits = sketch.count[j][hashes[j]];
+                }
+            }
 
-    cudaMemcpyAsync(
-        h_hashes,
-        d_hashes,
-        N_HASH * n_data * sizeof(unsigned short),
-        cudaMemcpyDeviceToHost);
+            for (int j = 0; j < N_HASH; j++) {
+                if (sketch.count[j][hashes[j]] == min_hits) {
+                    sketch.count[j][hashes[j]]++;
+                }
+            }
 
-    cudaStreamSynchronize(stream);
-    cudaStreamDestroy(stream);
+            min_hits++;
 
-    // Find heavy-hitters
-    unsigned int sketch[N_HASH * (1 << HASH_BITS)];
-
-    for (unsigned int i = 0; i < n_data; i++) {
-        unsigned int min_hits = std::numeric_limits<unsigned int>::max();
-
-        for (unsigned int j = 0; j < N_HASH; j++) {
-            if (sketch[h_hashes[i + n_data * j] + (j << HASH_BITS)] < min_hits) {
-                min_hits = sketch[h_hashes[i + n_data * j] + (j << HASH_BITS)];
+            if (min_hits >= settings.threshold[n]) {
+                uint64_t sequence = test_data[i] & mask;
+                heavy_hitters[sequence] = min_hits;
             }
         }
 
-        for (unsigned int j = 0; j < N_HASH; j++) {
-            if (sketch[h_hashes[i + n_data * j] + (j << HASH_BITS)] == min_hits) {
-                sketch[h_hashes[i + n_data * j] + (j << HASH_BITS)]++;
+        for (auto& i : heavy_hitters) {
+            i.second /= settings.growth;
+        }
+
+        // Control step
+        for (int i = 0; i < control_data.size(); i++) {
+            if (control_lengths[i] < length)
+                continue;
+
+            std::unordered_map<uint64_t, int>::iterator counter;
+            counter = heavy_hitters.find(control_data[i] & mask);
+            if (counter != heavy_hitters.end()) {
+                counter->second--;
             }
         }
 
-        if (min_hits + 1 >= threshold) {
-            heavy_hitters->insert(data_vectors[i]);
-        }
-    }
-
-    // Get frequencies for heavy-hitters
-    std::unordered_map<unsigned long, int> frequencies;
-
-    for (auto i : *heavy_hitters) {
-        frequencies[i] = std::numeric_limits<int>::max();
-
-        for (unsigned int j = 0; j < N_HASH; j++) {
-            unsigned int hash = hashH3(i, h_seeds + j * (MAX_LENGTH * 2), sequence_length * 2);
-            if (sketch[hash + (j << HASH_BITS)] < frequencies[i]) {
-                frequencies[i] = sketch[hash + (j << HASH_BITS)];
+        // Select only the heavy-hitters not in the control set
+        auto i = heavy_hitters.begin();
+        while (i != heavy_hitters.end()) {
+            if (i->second <= 0) {
+                i = heavy_hitters.erase(i);
+            }
+            else {
+                i++;
             }
         }
 
-        frequencies[i] /= GROWTH;
+        (*heavy_hitters_vec)[n] = heavy_hitters;
     }
 
-    // Control step
-    for (unsigned int i = 0; i < control_vectors.size(); i++) {
-        std::unordered_map<unsigned long, int>::iterator counter;
-        counter = frequencies.find(control_vectors[i]);
-        if (counter != frequencies.end()) {
-            counter->second--;
-        }
-    }
-
-    // Select only the heavy-hitters not in the control set
-    for (auto i : frequencies) {
-        if (i.second <= 0) {
-            heavy_hitters->erase(heavy_hitters->find(i.first));
-        }
-    }
-
-    cudaFree(d_data);
-    cudaFree(d_hashes);
-    // cudaFreeHost(h_data);
-    // cudaFreeHost(h_hashes);
     delete[] h_hashes;
 }
 
@@ -245,49 +206,132 @@ int main(int argc, char* argv[]) {
     }
 
     // Generate seeds
-    for (unsigned int i = 0; i < N_HASH * MAX_LENGTH * 2; i++)
-        h_seeds[i] = rand() & ((1 << HASH_BITS) - 1);
+    uint16_t* h_seeds = new uint16_t[N_HASH * MAX_LENGTH * 2];
+    for (int i = 0; i < N_HASH * MAX_LENGTH * 2; i++)
+        h_seeds[i] = rand() & ~(~0UL << HASH_BITS);
     cudaMemcpyToSymbol(d_seeds, h_seeds, sizeof(d_seeds));
     cudaDeviceSynchronize();
+    delete[] h_seeds;
 
     // Load memory mapped files
     MappedFile test_file = MappedFile::load(argv[1]);
     MappedFile control_file = MappedFile::load(argv[2]);
 
+    // Heavy-hitters containers
+    std::vector<std::unordered_map<uint64_t, int>> heavy_hitters;
+    heavy_hitters.resize(settings.n_length);
+
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
-    std::vector<std::unordered_set<unsigned long>> heavy_hitters;
-    heavy_hitters.resize(settings.n_length);
+    // Parse data set and transfer to device
+    std::vector<unsigned char> test_lengths;
+    std::vector<unsigned long> test_data = parseFasta(
+        test_file.data(),
+        test_file.size(),
+        settings.min_length,
+        ~(~0UL << (settings.max_length * 2)),
+        &test_lengths);
 
-    int n_threads = std::thread::hardware_concurrency();
-    std::vector<std::thread> worker_threads;
-    worker_threads.reserve(n_threads);
+    unsigned long n_data_test = test_data.size();
+    unsigned long* d_data_test;
 
-    int device_count;
-    cudaGetDeviceCount(&device_count);
+    auto preprocessing_time = std::chrono::steady_clock::now();
 
-    for (int n = 0; n < n_threads; n++) {
-        worker_threads.emplace_back(
-            hashWorker,
-            settings,
-            &test_file,
-            &control_file,
-            &heavy_hitters[n],
-            settings.min_length + n,
-            settings.threshold[n],
-            0);
+    // Copy sequences to device
+    cudaMalloc(&d_data_test, n_data_test * sizeof(unsigned long));
+    cudaMemcpyAsync(
+        d_data_test,
+        test_data.data(),
+        n_data_test * sizeof(unsigned long),
+        cudaMemcpyHostToDevice);
+
+    // Allocate memory for hashes and sketches
+    uint16_t* d_hashes;
+    size_t hash_data_size =
+        settings.n_length * n_data_test * N_HASH * sizeof(uint16_t);
+
+    cudaMalloc(&d_hashes, hash_data_size);
+
+    // Calculate hashes for the first length.
+    // The first is a special case since it needs to hash over MIN_LENGTH
+    // symbols instead of only one
+    int block_size = 256;
+    int num_blocks = 16;
+
+    hashH3<N_HASH><<<block_size, num_blocks, 0>>>(
+        n_data_test,
+        settings.min_length * 2,
+        d_data_test,
+        &d_hashes[0],
+        &d_hashes[0],
+        0);
+
+    // Compute for the rest of the k-mers lengths
+    for (int i = 1; i < settings.n_length; i++) {
+        hashH3<N_HASH><<<num_blocks, block_size, 0>>>(
+            n_data_test,
+            2,
+            d_data_test,
+            &d_hashes[n_data_test * N_HASH * (i - 1)],
+            &d_hashes[n_data_test * N_HASH * i],
+            (settings.min_length + i - 1) * 2);
     }
 
-    for (int n = 0; n < worker_threads.size(); n++) {
-        worker_threads[n].join();
+    // Sync device in separate thread to measure total hashing time
+    std::chrono::time_point<std::chrono::steady_clock> hash_time;
+    auto cuda_sync = std::async(
+        [&] {
+            cudaDeviceSynchronize();
+            hash_time = std::chrono::steady_clock::now();
+        }
+    );
+
+    // Parse control file during hash calculation
+    std::vector<unsigned char> control_lengths;
+    std::vector<unsigned long> control_data = parseFasta(
+        control_file.data(),
+        control_file.size(),
+        settings.min_length * 2,
+        ~(~0UL << (settings.max_length * 2)),
+        &control_lengths);
+
+    cuda_sync.wait();
+
+    // Create threads
+    int n_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads;
+    threads.reserve(n_threads);
+
+    for (int i = 0; i < n_threads; i++) {
+        threads.emplace_back(
+            sketchWorker,
+            settings,
+            i,
+            n_threads,
+            d_hashes,
+            test_data,
+            control_data,
+            test_lengths,
+            control_lengths,
+            &heavy_hitters
+        );
+    }
+
+    for (int i = 0; i < threads.size(); i++) {
+        threads[i].join();
     }
 
     // End time measurement
     auto end_time = std::chrono::steady_clock::now();
-    std::chrono::duration<double> diff_total = end_time - start_time;
+    std::chrono::duration<double> preprocessing_diff = preprocessing_time - start_time;
+    std::chrono::duration<double> hash_diff = hash_time - preprocessing_time;
+    std::chrono::duration<double> total_diff = end_time - start_time;
 
-    std::clog << "Execution time: " << diff_total.count() << " s" << std::endl;
+    std::clog << "Preprocessing time: " << preprocessing_diff.count() << " s" << std::endl;
+    std::clog << "Hashing time: " << hash_diff.count() << " s" << std::endl;
+    std::clog << "Execution time: " << total_diff.count() << " s" << std::endl;
+    std::clog << "Data vectors: " << n_data_test << std::endl;
 
     // Print heavy-hitters
     int heavy_hitters_count = 0;
@@ -298,16 +342,22 @@ int main(int argc, char* argv[]) {
             << "Heavy-hitters (length " << settings.min_length + n << "): "
             << heavy_hitters[n].size() << std::endl;
 
-
         for (auto x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x, settings.min_length + n)
+                << sequenceToString(x.first, settings.min_length + n)
                 << std::endl;
         }
     }
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
-    std::clog << "CUDA Devices: " << device_count << std::endl;
+
+    // Free shared memory
+    // cudaFree(d_data);
+    // cudaFree(d_sketch);
+    // cudaFree(d_hashes);
+    // cudaFree(d_heavy_hitters);
+    // cudaFree(heavy_hitters_count);
+    // cudaFreeHost(h_data);
 
     return 0;
 }

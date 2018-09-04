@@ -7,8 +7,6 @@
 
 #include "fasta.hpp"
 
-#include <iostream>
-
 
 std::vector<unsigned long> parseFasta(std::istream& input, int length) {
     std::vector<unsigned long> data_vectors;
@@ -63,9 +61,14 @@ std::vector<unsigned long> parseFasta(
         const char* data,
         int data_size,
         int sequence_length,
-        unsigned long mask) {
+        unsigned long mask,
+        std::vector<unsigned char>* lengths) {
     std::vector<unsigned long> data_vectors;
     data_vectors.reserve(data_size);
+
+    if (lengths != nullptr) {
+        lengths->reserve(data_size);
+    }
 
     unsigned long sequence = 0;
     int parsed = 0;
@@ -102,6 +105,9 @@ std::vector<unsigned long> parseFasta(
 
             if (++parsed >= sequence_length) {
                 data_vectors.push_back(sequence & mask);
+                if (lengths != nullptr) {
+                    lengths->push_back(parsed);
+                }
             }
         }
     }

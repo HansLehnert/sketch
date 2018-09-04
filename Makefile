@@ -10,7 +10,7 @@ USE_AVX := $(shell grep avx2 /proc/cpuinfo)
 
 
 EXECUTABLES += sketch
-EXECUTABLES += sketch_multithread
+# EXECUTABLES += sketch_multithread
 
 ifdef USE_AVX
 	# EXECUTABLES += sketch_avx
@@ -21,7 +21,7 @@ endif
 
 ifdef USE_CUDA
 	EXECUTABLES += sketch_cu
-	EXECUTABLES += sketch_cu_pipelined
+	# EXECUTABLES += sketch_cu_pipelined
 	# EXECUTABLES += sketch_cu_approx
 endif
 
