@@ -19,7 +19,6 @@
 
 #include "fasta.hpp"
 #include "MappedFile.hpp"
-#include "cuda_error.h"
 
 
 struct SketchSettings {
