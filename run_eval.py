@@ -22,10 +22,10 @@ else:
 # Programs to check
 programs = []
 
-programs.append('bin/sketch')
+# programs.append('bin/sketch')
 
-if use_avx:
-    programs.append('bin/sketch_avx_pipelined')
+# if use_avx:
+#     programs.append('bin/sketch_avx_pipelined')
 
 if use_cuda:
     programs.append('bin/sketch_cu')
@@ -73,7 +73,7 @@ datasets = {
 }
 
 
-n_runs = 10
+n_runs = 3
 
 for program_name in programs:
     print('Running program {}'.format(program_name))
@@ -105,27 +105,32 @@ for program_name in programs:
             measurements['min-length'] = min_length
             measurements['max-length'] = max_length
 
-            measurements['test-runtime [s]'] = re.search(
-                'Test time: ([0-9.]*)', result.stderr)
-            measurements['control-runtime [s]'] = re.search(
-                'Control time: ([0-9.]*)', result.stderr)
-            measurements['total-runtime [s]'] = re.search(
-                '(?:Total|Execution) time: ([0-9.]*)', result.stderr)
-            measurements['heavy-hitters'] = re.search(
+            # Find time reports in process output
+            runtimes = re.findall(
+                '^(.*) time: ([0-9.]*)', result.stderr, re.MULTILINE)
+
+            for name, time in runtimes:
+                measurements['{}-runtime [s]'.format(name.lower())] = time
+
+            # Find heavy-hitters
+            heavy_hitters = re.search(
                 'Heavy-hitters \(total\): ([0-9]*)', result.stderr)
 
-            for x in measurements:
-                if measurements[x] is not None:
-                    try:
-                        value = float(measurements[x].group(1))
-                    except AttributeError:
-                        value = measurements[x]
+            if heavy_hitters is not None:
+                measurements['heavy-hitters'] = heavy_hitters.group(1)
 
-                    measurement_name = '{}_{}'.format(dataset_name, x)
-                    if measurement_name not in runs:
-                        runs[measurement_name] = [value]
-                    else:
-                        runs[measurement_name].append(value)
+            # Add measurements into run log
+            for x in measurements:
+                measurement_name = '{}_{}'.format(dataset_name, x)
+                if measurement_name not in runs:
+                    runs[measurement_name] = ['-'] * i + [measurements[x]]
+                else:
+                    runs[measurement_name].append(measurements[x])
+
+            # Fill unreported measures with invalid value
+            for x in runs:
+                if dataset_name in x and len(runs[x]) <= i:
+                    runs[x].append('-')
 
             print('.', end='', flush=True)
         print('')
