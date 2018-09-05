@@ -278,15 +278,6 @@ int main(int argc, char* argv[]) {
             (settings.min_length + i - 1) * 2);
     }
 
-    // Sync device in separate thread to measure total hashing time
-    std::chrono::time_point<std::chrono::steady_clock> hash_time;
-    auto cuda_sync = std::async(
-        [&] {
-            cudaDeviceSynchronize();
-            hash_time = std::chrono::steady_clock::now();
-        }
-    );
-
     // Parse control file during hash calculation
     std::vector<unsigned char> control_lengths;
     std::vector<unsigned long> control_data = parseFasta(
@@ -296,7 +287,7 @@ int main(int argc, char* argv[]) {
         ~(~0UL << (settings.max_length * 2)),
         &control_lengths);
 
-    cuda_sync.wait();
+    cudaDeviceSynchronize();
 
     // Create threads
     int n_threads = std::thread::hardware_concurrency();
@@ -325,11 +316,9 @@ int main(int argc, char* argv[]) {
     // End time measurement
     auto end_time = std::chrono::steady_clock::now();
     std::chrono::duration<double> preprocessing_diff = preprocessing_time - start_time;
-    std::chrono::duration<double> hash_diff = hash_time - preprocessing_time;
     std::chrono::duration<double> total_diff = end_time - start_time;
 
     std::clog << "Preprocessing time: " << preprocessing_diff.count() << " s" << std::endl;
-    std::clog << "Hashing time: " << hash_diff.count() << " s" << std::endl;
     std::clog << "Execution time: " << total_diff.count() << " s" << std::endl;
     std::clog << "Data vectors: " << n_data_test << std::endl;
 

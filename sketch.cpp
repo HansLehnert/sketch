@@ -102,6 +102,11 @@ int main(int argc, char* argv[]) {
     MappedFile control_file = MappedFile::load(argv[2]);
 
     // Start time measurement
+    std::chrono::duration<double> preprocessing_total;
+    std::chrono::duration<double> test_total;
+    std::chrono::duration<double> control_total;
+    std::chrono::time_point<std::chrono::steady_clock> mid_time;
+
     auto start_time = std::chrono::steady_clock::now();
 
     std::vector<std::unordered_set<unsigned long>> heavy_hitters;
@@ -113,11 +118,16 @@ int main(int argc, char* argv[]) {
         // Create sketch
         unsigned int sketch[N_HASH][1 << HASH_BITS] = {0};
 
+        mid_time = std::chrono::steady_clock::now();
+
         // Parse data sets
         std::vector<unsigned long> data_vectors = parseFasta(
             test_file.data(), test_file.size(), length);
         std::vector<unsigned long> control_vectors = parseFasta(
             control_file.data(), control_file.size(), length);
+
+        preprocessing_total += std::chrono::steady_clock::now() - mid_time;
+        mid_time = std::chrono::steady_clock::now();
 
         // Hash values
         for (unsigned int i = 0; i < data_vectors.size(); i++) {
@@ -141,6 +151,9 @@ int main(int argc, char* argv[]) {
                 heavy_hitters[n].insert(data_vectors[i]);
             }
         }
+
+        test_total += std::chrono::steady_clock::now() - mid_time;
+        mid_time = std::chrono::steady_clock::now();
 
         // Get frequencies for heavy-hitters
         std::unordered_map<unsigned long, int> frequencies;
@@ -173,11 +186,19 @@ int main(int argc, char* argv[]) {
                 heavy_hitters[n].erase(heavy_hitters[n].find(i.first));
             }
         }
+
+        control_total += std::chrono::steady_clock::now() - mid_time;
+        mid_time = std::chrono::steady_clock::now();
     }
 
     auto end_time = std::chrono::steady_clock::now();
     std::chrono::duration<double> total_diff = end_time - start_time;
 
+    // Report times
+    std::clog << "Preprocessing time: " << preprocessing_total.count()
+        << " s" << std::endl;
+    std::clog << "Test time: " << test_total.count() << " s" << std::endl;
+    std::clog << "Control time: " << control_total.count() << " s" << std::endl;
     std::clog << "Total time: " << total_diff.count() << " s" << std::endl;
 
     // Print heavy-hitters
