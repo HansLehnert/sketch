@@ -19,6 +19,7 @@
 
 #include "fasta.hpp"
 #include "MappedFile.hpp"
+#include "cuda_error.h"
 
 
 const unsigned int MAX_LENGTH = 28;
@@ -94,7 +95,10 @@ void sketchWorker(
         std::vector<std::unordered_map<uint64_t, int>>* heavy_hitters_vec) {
 
     int test_data_size = test_data.size();
-    uint16_t* h_hashes = new uint16_t[N_HASH * test_data_size];
+
+    uint16_t* h_hashes;
+    h_hashes = new uint16_t[N_HASH * test_data_size];
+    //cudaMallocHost(&h_hashes, N_HASH * test_data_size * sizeof(uint16_t));
 
     for (int n = start; n < settings.n_length; n += stride) {
         uint64_t mask = ~(~0UL << ((settings.min_length + n) * 2));
@@ -257,15 +261,16 @@ int main(int argc, char* argv[]) {
     // The first is a special case since it needs to hash over MIN_LENGTH
     // symbols instead of only one
     int block_size = 256;
-    int num_blocks = 16;
+    int num_blocks = n_data_test / block_size;
 
-    hashH3<N_HASH><<<block_size, num_blocks, 0>>>(
+    hashH3<N_HASH><<<num_blocks, block_size, 0>>>(
         n_data_test,
         settings.min_length * 2,
         d_data_test,
         &d_hashes[0],
         &d_hashes[0],
         0);
+    gpuErrchk(cudaPeekAtLastError());
 
     // Compute for the rest of the k-mers lengths
     for (int i = 1; i < settings.n_length; i++) {
@@ -276,6 +281,7 @@ int main(int argc, char* argv[]) {
             &d_hashes[n_data_test * N_HASH * (i - 1)],
             &d_hashes[n_data_test * N_HASH * i],
             (settings.min_length + i - 1) * 2);
+        gpuErrchk(cudaPeekAtLastError());
     }
 
     // Parse control file during hash calculation
@@ -287,7 +293,7 @@ int main(int argc, char* argv[]) {
         ~(~0UL << (settings.max_length * 2)),
         &control_lengths);
 
-    cudaDeviceSynchronize();
+    gpuErrchk(cudaDeviceSynchronize());
 
     // Create threads
     int n_threads = std::thread::hardware_concurrency();
