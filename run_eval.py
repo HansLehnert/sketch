@@ -97,19 +97,22 @@ for program_name in programs:
 
         dataset = datasets[dataset_name]
 
+        min_length = dataset['first_length']
+        max_length = min_length + len(dataset['thresholds']) - 1
+
+        base_command = [
+            program_name,
+            dataset['test_file'],
+            dataset['control_file'],
+            str(min_length),
+            str(max_length),
+            *[str(x) for x in dataset['thresholds']]]
+
         for i in range(n_runs):
-            min_length = dataset['first_length']
-            max_length = min_length + len(dataset['thresholds']) - 1
-
-            command = [program_name,
-                dataset['test_file'],
-                dataset['control_file'],
-                str(min_length),
-                str(max_length),
-                *[str(x) for x in dataset['thresholds']]]
-
             if 'cuda' in programs[program_name]:
-                command = ['nvprof'] + command
+                command = ['nvprof'] + base_command
+            else:
+                command = base_command
 
             result = subprocess.run(
                 command,
@@ -166,13 +169,63 @@ for program_name in programs:
                     runs[x].append('-')
 
             print('.', end='', flush=True)
+
+        # Other CUDA metrics
+        if 'cuda' in programs[program_name]:
+            # Occupancy
+            print('[cuda metrics]', end='', flush=True)
+            command = ['nvprof', '--metrics', 'achieved_occupancy']
+            command += base_command
+
+            result = subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                universal_newlines=True)
+
+            occupancy = re.search(
+                'Achieved Occupancy\s+([0-9.]*)\s+([0-9.]*)\s+([0-9.]*)',
+                result.stderr)
+
+            if occupancy is not None:
+                runs['{}_occupancy-min'.format(dataset_name)] = (
+                    [occupancy.group(1)] + ['-'] * (n_runs - 1))
+                runs['{}_occupancy-max'.format(dataset_name)] = (
+                    [occupancy.group(2)] + ['-'] * (n_runs - 1))
+                runs['{}_occupancy-avg'.format(dataset_name)] = (
+                    [occupancy.group(3)] + ['-'] * (n_runs - 1))
+
+            # Power
+            power_filename = 'out/{}_{}_power.csv'.format(
+                program_name.split('/')[-1], dataset_name)
+            power_log = open(power_filename, 'w')
+
+            nvidia_smi = subprocess.Popen(
+                ['nvidia-smi',
+                    '-i', '0',
+                    '--format=csv',
+                    '--query-gpu=power.draw',
+                    '-lms', '50'],
+                stdout=power_log,
+                stderr=subprocess.DEVNULL,
+                universal_newlines=True)
+
+            subprocess.run(
+                base_command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+            nvidia_smi.terminate()
+
+            power_log.close()
+
         print('')
 
     output_filename = 'out/result_{}.csv'.format(program_name.split('/')[-1])
     print('Writing results to {}'.format(output_filename))
     with open(output_filename, 'w') as f:
         writer = csv.writer(f, delimiter=';')
-        writer.writerow(['run'] + list(runs.keys()))
+        writer.writerow(['run'] + list(range(1, n_runs + 1)))
 
-        for i in range(n_runs):
-            writer.writerow([i] + [runs[x][i] for x in runs])
+        for i in runs:
+            writer.writerow([i] + runs[i])
+
