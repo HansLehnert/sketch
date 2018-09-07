@@ -6,11 +6,16 @@ import re
 import csv
 import argparse
 import sys
+import json
 
 # Arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('runs', type=int)
-parser.add_argument('type', nargs='*')
+parser.add_argument('--cuda-metrics', action='store_true', dest='cuda_metrics')
+parser.add_argument(
+    '--program-type', nargs='*', default='auto', dest='program_type')
+parser.add_argument(
+    '--data-tags', nargs='*', default=['default'], dest='dataset_tags')
 args = parser.parse_args(sys.argv[1:])
 
 # Detect CUDA and AVX features
@@ -27,64 +32,31 @@ if 'avx2' in lscpu.stdout:
 else:
     use_avx = False
 
+if args.program_type == 'auto':
+    program_type = ['default']
+    if use_avx:
+        program_type.append('avx')
+    if use_cuda:
+        program_type.append('cuda')
+else:
+    program_type = args.program_type
+
 # Programs to check
-programs = {}
-
-programs['bin/sketch'] = {'default'}
-
-if use_avx:
-    programs['bin/sketch_avx_pipelined'] = {'avx'}
-
-if use_cuda:
-    programs['bin/sketch_cu'] = {'cuda'}
+# TODO: Move to external file
+programs = {
+    'bin/sketch': ['default'],
+    'bin/sketch_avx_pipelined': ['avx'],
+    'bin/sketch_cu': ['cuda']
+}
 
 # Database description
-datasets = {
-    'esbrr': {
-        'test_file': 'data/test.fasta',
-        'control_file': 'data/control.fasta',
-        'first_length': 10,
-        'thresholds': [365, 308, 257, 161, 150, 145, 145, 145, 145, 145, 145],
-    },
-
-    'e2f1': {
-        'test_file': 'data/E2f1-200-mm9-only.fasta',
-        'control_file': 'data/control.fasta',
-        'first_length': 10,
-        'thresholds': [351, 294, 245, 153, 143, 138, 138, 138, 138, 138, 138]
-    },
-
-    'tcfcpl1': {
-        'test_file': 'data/Tcfcpl1-200-mm9-only.fasta',
-        'control_file': 'data/control.fasta',
-        'first_length': 10,
-        'thresholds': [457, 382, 319, 200, 186, 180, 180, 180, 180, 180, 180]
-    },
-
-    'ctcf': {
-        'test_file': 'data/ctcf-200-mm9-only.fasta',
-        'control_file': 'data/control.fasta',
-        'first_length': 10,
-        'thresholds': [673, 563, 470, 294, 274, 265, 265, 265, 265, 265, 265]
-    },
-
-    'wgEncode': {
-        'test_file':
-            'data/wgEncodeOpenChromChipHepg2Pol2Pk_peak-200-hg19-only.fasta',
-        'control_file':
-            'data/wgEncodeHepg2Pol2Pk_peak-200-hg9-control.fasta',
-        'first_length': 10,
-        'thresholds': [
-            13400, 11700, 10950, 9600, 9100, 8500, 8000, 7500, 7400, 6000,
-            4500, 3900, 3800, 3050, 2700, 2600, 2500, 2300, 2300]
-    }
-}
+with open('datasets.json') as dataset_file:
+    datasets = json.load(dataset_file)
 
 n_runs = args.runs
 
 for program_name in programs:
-    if (args.type is not None and
-            not any(x in programs[program_name] for x in args.type)):
+    if not any(x in programs[program_name] for x in program_type):
         print('Skipping program {}'.format(program_name))
         continue
 
@@ -93,9 +65,12 @@ for program_name in programs:
     runs = collections.OrderedDict()
 
     for dataset_name in datasets:
-        print('Using dataset {}'.format(dataset_name), end='', flush=True)
-
         dataset = datasets[dataset_name]
+
+        if not any(x in dataset['tags'] for x in args.dataset_tags):
+            continue
+
+        print('Using dataset {}'.format(dataset_name), end='', flush=True)
 
         min_length = dataset['first_length']
         max_length = min_length + len(dataset['thresholds']) - 1
@@ -171,7 +146,7 @@ for program_name in programs:
             print('.', end='', flush=True)
 
         # Other CUDA metrics
-        if 'cuda' in programs[program_name]:
+        if 'cuda' in programs[program_name] and args.cuda_metrics:
             # Occupancy
             print('[cuda metrics]', end='', flush=True)
             command = ['nvprof', '--metrics', 'achieved_occupancy']
