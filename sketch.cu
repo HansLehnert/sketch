@@ -14,7 +14,7 @@
 #include <chrono>
 #include <limits>
 #include <thread>
-#include <future>
+#include <mutex>
 #include <unordered_map>
 
 #include "fasta.hpp"
@@ -26,6 +26,8 @@ const unsigned int MAX_LENGTH = 28;
 
 const unsigned int N_HASH = 4;
 const unsigned int HASH_BITS = 14;
+
+const unsigned int MAX_BUFFER_SIZE = 1 << 14;
 
 // Seeds
 __constant__ uint16_t d_seeds[N_HASH * MAX_LENGTH * 2];
@@ -85,6 +87,7 @@ __global__ void hashH3(
 
 void sketchWorker(
         const SketchSettings& settings,
+        std::mutex* mutex,
         int start,
         int stride,
         const uint16_t* d_hashes,
@@ -108,40 +111,53 @@ void sketchWorker(
 
         std::unordered_map<uint64_t, int> heavy_hitters;
 
-        // Copy hashes from device
-        cudaMemcpy(
-            h_hashes,
-            &d_hashes[N_HASH * test_data_size * n],
-            N_HASH * test_data_size * sizeof(uint16_t),
-            cudaMemcpyDeviceToHost
-        );
+        for (int m = 0; m < test_data_size; m += MAX_BUFFER_SIZE) {
+            unsigned long batch_size;
+            if (test_data_size - n > MAX_BUFFER_SIZE) {
+                batch_size = MAX_BUFFER_SIZE;
+            }
+            else {
+                batch_size = test_data_size - n;
+            }
+            mutex->lock();
 
-        // Hash values
-        for (int i = 0; i < test_data_size; i++) {
-            if (test_lengths[i] < length)
-                continue;
+            // Copy hashes from device
+            cudaMemcpy(
+                h_hashes,
+                &d_hashes[N_HASH * MAX_BUFFER_SIZE * n],
+                N_HASH * batch_size * sizeof(uint16_t),
+                cudaMemcpyDeviceToHost
+            );
 
-            int min_hits = std::numeric_limits<int>::max();
-            uint16_t* hashes = &h_hashes[i * N_HASH];
+            // Hash values
+            for (int i = 0; i < batch_size; i++) {
+                if (test_lengths[m + i] < length)
+                    continue;
 
-            for (int j = 0; j < N_HASH; j++) {
-                if (sketch.count[j][hashes[j]] < min_hits) {
-                    min_hits = sketch.count[j][hashes[j]];
+                int min_hits = std::numeric_limits<int>::max();
+                uint16_t* hashes = &h_hashes[i * N_HASH];
+
+                for (int j = 0; j < N_HASH; j++) {
+                    if (sketch.count[j][hashes[j]] < min_hits) {
+                        min_hits = sketch.count[j][hashes[j]];
+                    }
+                }
+
+                for (int j = 0; j < N_HASH; j++) {
+                    if (sketch.count[j][hashes[j]] == min_hits) {
+                        sketch.count[j][hashes[j]]++;
+                    }
+                }
+
+                min_hits++;
+
+                if (min_hits >= settings.threshold[n]) {
+                    uint64_t sequence = test_data[m + i] & mask;
+                    heavy_hitters[sequence] = min_hits;
                 }
             }
 
-            for (int j = 0; j < N_HASH; j++) {
-                if (sketch.count[j][hashes[j]] == min_hits) {
-                    sketch.count[j][hashes[j]]++;
-                }
-            }
-
-            min_hits++;
-
-            if (min_hits >= settings.threshold[n]) {
-                uint64_t sequence = test_data[i] & mask;
-                heavy_hitters[sequence] = min_hits;
-            }
+            mutex->unlock();
         }
 
         for (auto& i : heavy_hitters) {
@@ -225,6 +241,14 @@ int main(int argc, char* argv[]) {
     std::vector<std::unordered_map<uint64_t, int>> heavy_hitters;
     heavy_hitters.resize(settings.n_length);
 
+    // Allocate gpu memory
+    uint64_t* d_data_test;
+    uint16_t* d_hashes;
+    gpuErrchk(cudaMalloc(&d_data_test, MAX_BUFFER_SIZE * sizeof(uint64_t)));
+    gpuErrchk(cudaMalloc(
+        &d_hashes,
+        MAX_BUFFER_SIZE * settings.n_length * N_HASH* sizeof(uint16_t)));
+
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
@@ -237,52 +261,7 @@ int main(int argc, char* argv[]) {
         ~(~0UL << (settings.max_length * 2)),
         &test_lengths);
 
-    unsigned long n_data_test = test_data.size();
-    unsigned long* d_data_test;
-
     auto preprocessing_time = std::chrono::steady_clock::now();
-
-    // Copy sequences to device
-    cudaMalloc(&d_data_test, n_data_test * sizeof(unsigned long));
-    cudaMemcpyAsync(
-        d_data_test,
-        test_data.data(),
-        n_data_test * sizeof(unsigned long),
-        cudaMemcpyHostToDevice);
-
-    // Allocate memory for hashes and sketches
-    uint16_t* d_hashes;
-    size_t hash_data_size =
-        settings.n_length * n_data_test * N_HASH * sizeof(uint16_t);
-
-    cudaMalloc(&d_hashes, hash_data_size);
-
-    // Calculate hashes for the first length.
-    // The first is a special case since it needs to hash over MIN_LENGTH
-    // symbols instead of only one
-    int block_size = 256;
-    int num_blocks = n_data_test / block_size;
-
-    hashH3<N_HASH><<<num_blocks, block_size, 0>>>(
-        n_data_test,
-        settings.min_length * 2,
-        d_data_test,
-        &d_hashes[0],
-        &d_hashes[0],
-        0);
-    gpuErrchk(cudaPeekAtLastError());
-
-    // Compute for the rest of the k-mers lengths
-    for (int i = 1; i < settings.n_length; i++) {
-        hashH3<N_HASH><<<num_blocks, block_size, 0>>>(
-            n_data_test,
-            2,
-            d_data_test,
-            &d_hashes[n_data_test * N_HASH * (i - 1)],
-            &d_hashes[n_data_test * N_HASH * i],
-            (settings.min_length + i - 1) * 2);
-        gpuErrchk(cudaPeekAtLastError());
-    }
 
     // Parse control file during hash calculation
     std::vector<unsigned char> control_lengths;
@@ -293,28 +272,88 @@ int main(int argc, char* argv[]) {
         ~(~0UL << (settings.max_length * 2)),
         &control_lengths);
 
-    gpuErrchk(cudaDeviceSynchronize());
-
     // Create threads
-    int n_threads = std::thread::hardware_concurrency();
+    int n_threads = settings.n_length;
     std::vector<std::thread> threads;
+    std::mutex* hash_locks = new std::mutex[n_threads];
     threads.reserve(n_threads);
+    // hash_locks.resize(n_threads);
 
-    for (int i = 0; i < n_threads; i++) {
-        threads.emplace_back(
-            sketchWorker,
-            settings,
-            i,
-            n_threads,
-            d_hashes,
-            test_data,
-            control_data,
-            test_lengths,
-            control_lengths,
-            &heavy_hitters
-        );
+    unsigned long n_data_test = test_data.size();
+
+    for (int n = 0; n < n_data_test; n += MAX_BUFFER_SIZE) {
+        unsigned long batch_size;
+        if (n_data_test - n > MAX_BUFFER_SIZE) {
+            batch_size = MAX_BUFFER_SIZE;
+        }
+        else {
+            batch_size = n_data_test - n;
+        }
+
+        for (int i = 0; i < n_threads; i++) {
+            hash_locks[i].lock();
+        }
+
+        // Copy sequences to device
+        gpuErrchk(cudaMemcpyAsync(
+            d_data_test,
+            &test_data[n],
+            batch_size * sizeof(unsigned long),
+            cudaMemcpyHostToDevice));
+
+        // Calculate hashes for the first length.
+        // The first is a special case since it needs to hash over MIN_LENGTH
+        // symbols instead of only one
+        int block_size = 256;
+        int num_blocks = batch_size / block_size;
+
+        hashH3<N_HASH><<<num_blocks, block_size, 0>>>(
+            batch_size,
+            settings.min_length * 2,
+            d_data_test,
+            &d_hashes[0],
+            &d_hashes[0],
+            0);
+        gpuErrchk(cudaPeekAtLastError());
+
+        // Compute for the rest of the k-mers lengths
+        for (int i = 1; i < settings.n_length; i++) {
+            hashH3<N_HASH><<<num_blocks, block_size, 0>>>(
+                batch_size,
+                2,
+                d_data_test,
+                &d_hashes[MAX_BUFFER_SIZE * N_HASH * (i - 1)],
+                &d_hashes[MAX_BUFFER_SIZE * N_HASH * i],
+                (settings.min_length + i - 1) * 2);
+            gpuErrchk(cudaPeekAtLastError());
+        }
+
+        gpuErrchk(cudaDeviceSynchronize());
+
+        for (int i = 0; i < n_threads; i++) {
+            hash_locks[i].unlock();
+        }
+
+        if (n == 0) {
+            for (int i = 0; i < n_threads; i++) {
+                threads.emplace_back(
+                    sketchWorker,
+                    settings,
+                    &hash_locks[i],
+                    i,
+                    n_threads,
+                    d_hashes,
+                    test_data,
+                    control_data,
+                    test_lengths,
+                    control_lengths,
+                    &heavy_hitters
+                );
+            }
+        }
     }
 
+    // Join worker threads
     for (int i = 0; i < threads.size(); i++) {
         threads[i].join();
     }
@@ -353,6 +392,8 @@ int main(int argc, char* argv[]) {
     // cudaFree(d_heavy_hitters);
     // cudaFree(heavy_hitters_count);
     // cudaFreeHost(h_data);
+
+    delete[] hash_locks;
 
     return 0;
 }
