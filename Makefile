@@ -10,6 +10,8 @@ USE_AVX := $(shell grep avx2 /proc/cpuinfo)
 
 
 EXECUTABLES += sketch
+EXECUTABLES += sketch_countmin
+EXECUTABLES += sketch_countsketch
 # EXECUTABLES += sketch_multithread
 
 ifdef USE_AVX
@@ -41,6 +43,14 @@ bin/%.o: %.cpp
 	$(G++) $(CPP_FLAGS) -c $^ -o $@
 
 bin/sketch: sketch.cpp bin/fasta.o bin/MappedFile.o
+	@$(MKDIR) $(@D)
+	$(G++) $(CPP_FLAGS) $^ -o $@
+
+bin/sketch_countmin: sketch_countmin.cpp bin/fasta.o bin/MappedFile.o
+	@$(MKDIR) $(@D)
+	$(G++) $(CPP_FLAGS) $^ -o $@
+
+bin/sketch_countsketch: sketch_countsketch.cpp bin/fasta.o bin/MappedFile.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $^ -o $@
 

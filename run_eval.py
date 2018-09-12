@@ -44,7 +44,9 @@ else:
 # Programs to check
 # TODO: Move to external file
 programs = {
-    'bin/sketch': ['default'],
+    'bin/sketch': ['default', 'sketch_cmp'],
+    'bin/sketch_countmin': ['sketch_cmp'],
+    'bin/sketch_countsketch': ['sketch_cmp'],
     'bin/sketch_avx_pipelined': ['avx'],
     'bin/sketch_cu': ['cuda']
 }
@@ -203,4 +205,3 @@ for program_name in programs:
 
         for i in runs:
             writer.writerow([i] + runs[i])
-
