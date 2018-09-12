@@ -1,7 +1,7 @@
 /**
  * @brief Countmin-CU sketch
  *
- * Base implementation
+ * Implementation using AVX2
  *
  * @file sketch.cpp
  * @author Hans Lehnert
