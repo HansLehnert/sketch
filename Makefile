@@ -36,43 +36,43 @@ run: all
 	@$(MKDIR) out/
 	@$(foreach exec, $(EXECUTABLES), echo $(exec);./bin/$(exec) $(DATASET) > out/$(exec).txt;)
 
-bin/%.o: %.cpp
+bin/%.o: src/%.cpp
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) -c $^ -o $@
 
-bin/sketch: sketch.cpp bin/fasta.o bin/MappedFile.o
+bin/sketch: src/sketch.cpp bin/fasta.o bin/MappedFile.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $^ -o $@
 
-bin/sketch_multithread: sketch_multithread.cpp bin/fasta.o bin/MappedFile.o
+bin/sketch_multithread: src/sketch_multithread.cpp bin/fasta.o bin/MappedFile.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $^ -o $@
 
-bin/sketch_avx: sketch_avx.cpp bin/fasta.o
+bin/sketch_avx: src/sketch_avx.cpp bin/fasta.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) $^ -o $@
 
-bin/sketch_avx_multithread: sketch_avx_multithread.cpp bin/fasta.o
+bin/sketch_avx_multithread: src/sketch_avx_multithread.cpp bin/fasta.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) $^ -o $@
 
-bin/sketch_avx_multithread_approx: sketch_avx_multithread_approx.cpp bin/fasta.o
+bin/sketch_avx_multithread_approx: src/sketch_avx_multithread_approx.cpp bin/fasta.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) $^ -o $@
 
-bin/sketch_avx_pipelined: sketch_avx_pipelined.cpp bin/fasta.o bin/MappedFile.o
+bin/sketch_avx_pipelined: src/sketch_avx_pipelined.cpp bin/fasta.o bin/MappedFile.o
 	@$(MKDIR) $(@D)
 	$(G++) $(CPP_FLAGS) $(AVX_FLAGS) $^ -o $@
 
-bin/sketch_cu: sketch.cu bin/fasta.o bin/MappedFile.o
+bin/sketch_cu: src/sketch.cu bin/fasta.o bin/MappedFile.o
 	@$(MKDIR) $(@D)
 	$(NVCC) $(CU_FLAGS) --compiler-options="$(AVX_FLAGS) $(CPP_FLAGS)" $^ -o $@
 
-bin/sketch_cu_approx: sketch_approx.cu bin/fasta.o
+bin/sketch_cu_approx: src/sketch_approx.cu bin/fasta.o
 	@$(MKDIR) $(@D)
 	$(NVCC) $(CU_FLAGS) --compiler-options="$(AVX_FLAGS) $(CPP_FLAGS)" $^ -o $@
 
-bin/sketch_cu_pipelined: sketch_pipelined.cu bin/fasta.o bin/MappedFile.o
+bin/sketch_cu_pipelined: src/sketch_pipelined.cu bin/fasta.o bin/MappedFile.o
 	@$(MKDIR) $(@D)
 	$(NVCC) $(CU_FLAGS) --compiler-options="$(AVX_FLAGS) $(CPP_FLAGS)" $^ -o $@
 
