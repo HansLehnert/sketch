@@ -100,8 +100,7 @@ void sketchWorker(
     int test_data_size = test_data->size();
 
     uint16_t* h_hashes;
-    h_hashes = new uint16_t[N_HASH * MAX_BUFFER_SIZE];
-    //cudaMallocHost(&h_hashes, N_HASH * test_data_size * sizeof(uint16_t));
+    cudaMallocHost(&h_hashes, N_HASH * MAX_BUFFER_SIZE * sizeof(uint16_t));
 
     for (int n = start; n < settings.n_length; n += stride) {
         uint64_t mask = ~(~0UL << ((settings.min_length + n) * 2));
@@ -191,7 +190,7 @@ void sketchWorker(
         (*heavy_hitters_vec)[n] = heavy_hitters;
     }
 
-    delete[] h_hashes;
+    cudaFreeHost(h_hashes);
 }
 
 
