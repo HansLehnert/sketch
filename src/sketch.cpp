@@ -15,10 +15,13 @@
 #include <limits>
 #include <unordered_set>
 #include <unordered_map>
+#include <cstring>
 
 #include "fasta.hpp"
 #include "MappedFile.hpp"
+#include "Sketch.inl"
 
+typedef PackedArray<2, 32> Sequence;
 
 // Number of hashes to use in the sketch
 const unsigned int N_HASH = 4;
@@ -87,119 +90,244 @@ int main(int argc, char* argv[]) {
     }
 
     // Generate seeds
-    unsigned short* seeds[N_HASH];
-    unsigned short* seeds_values;
-    seeds_values = new unsigned short[N_HASH * settings.max_length * 2];
-    for (unsigned int i = 0; i < N_HASH; i++) {
-        seeds[i] = &seeds_values[settings.max_length * 2 * i];
-        for (unsigned int j = 0; j < settings.max_length * 2; j++) {
-            seeds[i][j] = rand() & ((1 << HASH_BITS) - 1);
-        }
+    size_t n_seeds = N_HASH * settings.max_length * 4;
+    unsigned short* seeds = new unsigned short[n_seeds];
+    for (unsigned int i = 0; i < n_seeds; i++) {
+        seeds[i] = rand() & ((1 << HASH_BITS) - 1);
     }
 
     // Load memory mapped files
     MappedFile test_file = MappedFile::load(argv[1]);
     MappedFile control_file = MappedFile::load(argv[2]);
+    const char* test_data = test_file.data();
+    const char* control_data = control_file.data();
+
+    std::vector<std::unordered_set<Sequence>> heavy_hitters(settings.n_length);
 
     // Start time measurement
-    std::chrono::duration<double> preprocessing_total;
-    std::chrono::duration<double> test_total;
-    std::chrono::duration<double> control_total;
-    std::chrono::time_point<std::chrono::steady_clock> mid_time;
-
     auto start_time = std::chrono::steady_clock::now();
 
-    std::vector<std::unordered_set<unsigned long>> heavy_hitters;
-    heavy_hitters.resize(settings.n_length);
+    int kmer_start = 0;
 
-    for (int n = 0; n < settings.n_length; n++) {
-        int length = settings.min_length + n;
+    // Sketch definition
+    SketchSet<int, N_HASH, HASH_BITS> sketch(settings.n_length);
 
-        // Create sketch
-        unsigned int sketch[N_HASH][1 << HASH_BITS] = {0};
+    while (kmer_start < test_file.size()) {
+        bool sequence_end = false;
 
-        mid_time = std::chrono::steady_clock::now();
+        int i;
+        unsigned short hashes[N_HASH] = {0};
+        Sequence encoded_kmer;
 
-        // Parse data sets
-        std::vector<unsigned long> data_vectors = parseFasta(
-            test_file.data(), test_file.size(), length);
-        std::vector<unsigned long> control_vectors = parseFasta(
-            control_file.data(), control_file.size(), length);
+        // Hashing of the first symbols, which don't yet generate a k-mer of
+        // the wanted length
+        for (i = 0; i < settings.min_length - 1; i++) {
+            int symbol;
 
-        preprocessing_total += std::chrono::steady_clock::now() - mid_time;
-        mid_time = std::chrono::steady_clock::now();
+            switch (test_data[kmer_start + i]) {
+            case 'A':
+                symbol = 0;
+                break;
+            case 'C':
+                symbol = 1;
+                break;
+            case 'T':
+                symbol = 2;
+                break;
+            case 'G':
+                symbol = 3;
+                break;
+            default:
+                sequence_end = true;
+                break;
+            }
 
-        // Hash values
-        for (unsigned int i = 0; i < data_vectors.size(); i++) {
+            if (sequence_end)
+                break;
+
+            encoded_kmer.set(i, symbol);
+
+            for (int j = 0; j < N_HASH; j++) {
+                hashes[j] ^= seeds[4 * N_HASH * i + 4 * j + symbol];
+            }
+        }
+
+        if (sequence_end) {
+            kmer_start += i + 1;
+            continue;
+        }
+
+        // Hashes for relevant lengths
+        for (; i < settings.max_length; i++) {
+            int symbol;
+
+            switch (test_data[kmer_start + i]) {
+            case 'A':
+                symbol = 0;
+                break;
+            case 'C':
+                symbol = 1;
+                break;
+            case 'T':
+                symbol = 2;
+                break;
+            case 'G':
+                symbol = 3;
+                break;
+            default:
+                sequence_end = true;
+                break;
+            }
+
+            encoded_kmer.set(i, symbol);
+
+            // Add to sketch
             unsigned int min_hits = std::numeric_limits<unsigned int>::max();
-            unsigned int hashes[N_HASH];
 
-            for (unsigned int j = 0; j < N_HASH; j++) {
-                hashes[j] = hashH3(data_vectors[i], seeds[j], length * 2);
-                if (sketch[j][hashes[j]] < min_hits) {
-                    min_hits = sketch[j][hashes[j]];
+            for (int j = 0; j < N_HASH; j++) {
+                hashes[j] ^= seeds[4 * N_HASH * i + 4 * j + symbol];
+                int counter = sketch[i - settings.min_length + 1][j][hashes[j]];
+                if (counter < min_hits) {
+                    min_hits = counter;
                 }
             }
 
             for (unsigned int j = 0; j < N_HASH; j++) {
-                if (sketch[j][hashes[j]] == min_hits) {
-                    sketch[j][hashes[j]]++;
+                if (sketch[i - settings.min_length + 1][j][hashes[j]] == min_hits) {
+                    sketch[i - settings.min_length + 1][j][hashes[j]]++;
                 }
             }
 
-            if (min_hits + 1 == settings.threshold[n]) {
-                heavy_hitters[n].insert(data_vectors[i]);
+            if (min_hits + 1 >= settings.threshold[i - settings.min_length + 1]) {
+                heavy_hitters[i - settings.min_length + 1].insert(encoded_kmer);
             }
         }
 
-        test_total += std::chrono::steady_clock::now() - mid_time;
-        mid_time = std::chrono::steady_clock::now();
+        kmer_start++;
+    }
 
-        // Get frequencies for heavy-hitters
-        std::unordered_map<unsigned long, int> frequencies;
+    auto test_end_time = std::chrono::steady_clock::now();
 
-        for (auto i : heavy_hitters[n]) {
-            frequencies[i] = std::numeric_limits<int>::max();
+    // Get frequencies for heavy-hitters
+    std::vector<std::unordered_map<Sequence, int>> frequencies(settings.n_length);
+    for (int n = 0; n < settings.n_length; n++) {
+        for (auto& encoded_kmer : heavy_hitters[n]) {
+            frequencies[n][encoded_kmer] = std::numeric_limits<int>::max();
 
-            for (unsigned int j = 0; j < N_HASH; j++) {
-                unsigned int hash = hashH3(i, seeds[j], length * 2);
-                if (sketch[j][hash] < frequencies[i]) {
-                    frequencies[i] = sketch[j][hash];
+            for (int j = 0; j < N_HASH; j++) {
+                unsigned short hash = 0;
+                for (int i = 0; i < settings.min_length + n; i++)
+                    hash ^= seeds[4 * N_HASH * i + 4 * j + encoded_kmer.get(i)];
+
+                if (sketch[n][j][hash] < frequencies[n][encoded_kmer]) {
+                    frequencies[n][encoded_kmer] = sketch[n][j][hash];
                 }
             }
 
-            frequencies[i] /= GROWTH;
+            frequencies[n][encoded_kmer] /= GROWTH;
+        }
+    }
+
+    // Control step
+    kmer_start = 0;
+    while (kmer_start < control_file.size()) {
+        bool sequence_end = false;
+
+        int i;
+        Sequence encoded_kmer;
+
+        for (i = 0; i < settings.min_length - 1; i++) {
+            int symbol;
+
+            switch (control_data[kmer_start + i]) {
+            case 'A':
+                symbol = 0;
+                break;
+            case 'C':
+                symbol = 1;
+                break;
+            case 'T':
+                symbol = 2;
+                break;
+            case 'G':
+                symbol = 3;
+                break;
+            default:
+                sequence_end = true;
+                break;
+            }
+
+            if (sequence_end)
+                break;
+
+            encoded_kmer.set(i, symbol);
         }
 
-        // Control step
-        for (unsigned int i = 0; i < control_vectors.size(); i++) {
-            std::unordered_map<unsigned long, int>::iterator counter;
-            counter = frequencies.find(control_vectors[i]);
-            if (counter != frequencies.end()) {
+        if (sequence_end) {
+            kmer_start += i + 1;
+            continue;
+        }
+
+        for (; i < settings.max_length; i++) {
+            int symbol;
+
+            switch (control_data[kmer_start + i]) {
+            case 'A':
+                symbol = 0;
+                break;
+            case 'C':
+                symbol = 1;
+                break;
+            case 'T':
+                symbol = 2;
+                break;
+            case 'G':
+                symbol = 3;
+                break;
+            default:
+                sequence_end = true;
+                break;
+            }
+
+            encoded_kmer.set(i, symbol);
+
+            std::unordered_map<Sequence, int>::iterator counter;
+            counter = frequencies[i - settings.min_length + 1].find(encoded_kmer);
+            if (counter != frequencies[i - settings.min_length + 1].end()) {
                 counter->second--;
             }
         }
 
-        // Select only the heavy-hitters not in the control set
-        for (auto i : frequencies) {
+        kmer_start++;
+    }
+
+    // Select only the heavy-hitters not in the control set
+    for (int n = 0; n < settings.n_length; n++) {
+        for (auto i : frequencies[n]) {
             if (i.second <= 0) {
                 heavy_hitters[n].erase(heavy_hitters[n].find(i.first));
             }
         }
-
-        control_total += std::chrono::steady_clock::now() - mid_time;
-        mid_time = std::chrono::steady_clock::now();
     }
 
     auto end_time = std::chrono::steady_clock::now();
-    std::chrono::duration<double> total_diff = end_time - start_time;
 
     // Report times
-    std::clog << "Preprocessing time: " << preprocessing_total.count()
-        << " s" << std::endl;
-    std::clog << "Test time: " << test_total.count() << " s" << std::endl;
-    std::clog << "Control time: " << control_total.count() << " s" << std::endl;
-    std::clog << "Total time: " << total_diff.count() << " s" << std::endl;
+    std::clog
+        << "Test time: "
+        << std::chrono::duration<double>(test_end_time - start_time).count()
+        << " s"
+        << std::endl;
+    std::clog
+        << "Control time: "
+        << std::chrono::duration<double>(end_time - test_end_time).count()
+        << " s"
+        << std::endl;
+    std::clog
+        << "Total time: "
+        << std::chrono::duration<double>(end_time - start_time).count()
+        << " s"
+        << std::endl;
 
     // Print heavy-hitters
     int heavy_hitters_count = 0;
@@ -212,13 +340,13 @@ int main(int argc, char* argv[]) {
 
         for (auto x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x, settings.min_length + n) << std::endl;
+                << sequenceToString(x.data, settings.min_length + n) << std::endl;
         }
     }
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
 
-    delete[] seeds_values;
+    delete[] seeds;
 
     return 0;
 }
