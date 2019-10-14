@@ -19,7 +19,8 @@
 
 #include "fasta.hpp"
 #include "MappedFile.hpp"
-#include "Sketch.inl"
+#include "Sketch.hpp"
+#include "PackedArray.hpp"
 
 typedef PackedArray<2, 32> Sequence;
 
@@ -42,20 +43,6 @@ struct SketchSettings {
 
     float growth;
 };
-
-
-/**
- * @brief Compute H3 hash
- */
-unsigned int hashH3(unsigned long key, unsigned short* seeds, int bits) {
-    unsigned int result = 0;
-    for (int i = 0; i < bits; i++) {
-        if (key & 1)
-            result ^= seeds[i];
-        key >>= 1;
-    }
-    return result;
-}
 
 
 int main(int argc, char* argv[]) {
@@ -340,7 +327,7 @@ int main(int argc, char* argv[]) {
 
         for (auto x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x.data, settings.min_length + n) << std::endl;
+                << sequenceToString(x.data[0], settings.min_length + n) << std::endl;
         }
     }
 
