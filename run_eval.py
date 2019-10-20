@@ -44,9 +44,9 @@ else:
 # Programs to check
 # TODO: Move to external file
 programs = {
-    'bin/sketch': ['default'],
-    'bin/sketch_avx_pipelined': ['avx'],
-    'bin/sketch_cu': ['cuda']
+    'bin/release/sketch': ['default'],
+    'bin/release/sketch_avx_pipelined': ['avx'],
+    'bin/release/sketch_cu': ['cuda']
 }
 
 # Database description
@@ -203,4 +203,3 @@ for program_name in programs:
 
         for i in runs:
             writer.writerow([i] + runs[i])
-
