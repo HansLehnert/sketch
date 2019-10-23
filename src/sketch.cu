@@ -17,21 +17,28 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "cuda_error.h"
 #include "fasta.hpp"
 #include "MappedFile.hpp"
-#include "cuda_error.h"
+#include "Sketch.hpp"
+#include "PackedArray.cuh"
+#include "HashTable.cuh"
 
-
-const unsigned int MAX_LENGTH = 28;
+const unsigned int MAX_LENGTH = 32;
 
 const unsigned int N_HASH = 4;
 const unsigned int HASH_BITS = 14;
 
-const unsigned int MAX_BUFFER_SIZE = 1 << 24;
+const unsigned int MAX_BUFFER_SIZE = 1 << 25;
+
+union HashSet {
+    uint64_t vec;
+    uint16_t val[N_HASH];
+};
 
 // Seeds
-__constant__ uint16_t d_seeds[N_HASH * MAX_LENGTH * 2];
-
+__constant__ HashSet d_seeds[MAX_LENGTH][4];
+__constant__ int d_thresholds[MAX_LENGTH];
 
 struct SketchSettings {
     int min_length;
@@ -44,42 +51,125 @@ struct SketchSettings {
 };
 
 
-struct Sketch {
-    int32_t count[N_HASH][1 << HASH_BITS];
-};
+// Populates sketch using the countmin-cu strategy and extract heavy-hitters
+//
+// Must be called with only 1 block due to heavy dependence on thread
+// synchronization.
+__global__ void countmincu(
+        char* data,
+        size_t data_length,
+        Sketch<int32_t, N_HASH, HASH_BITS>* sketches,
+        int min_length,
+        int max_length,
+        HashTable<HASH_BITS>* heavy_hitters
+) {
+    const uint32_t start_index = threadIdx.x;
+    const uint32_t stride = blockDim.x;
 
+    const int32_t offset = threadIdx.x;
+    const uint32_t last_start_pos = data_length - min_length + 1;
 
-/**
- * @brief
- * Compute H3 hash
- *
- * Compute the H3 hash on a set of keys using constant memory seeds. Keys are
- * shifted by the offset, to start the hash.
- */
-template <int n_hash>
-__global__ void hashH3(
-        int n,
-        int bits,
-        uint64_t* keys,
-        uint16_t* src,
-        uint16_t* dst,
-        int offset) {
-    unsigned int start_index = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int stride = blockDim.x * gridDim.x;
+    for (uint32_t start_pos = start_index; start_pos < last_start_pos; start_pos += stride) {
+        bool sequence_end = false;
 
-    for (unsigned int i = start_index; i < n; i += stride) {
-        for (int j = 0; j < n_hash; j++)
-            dst[i * n_hash + j] = src[i * n_hash + j];
+        int i;
+        HashSet hashes = {0};
+        uint64_t encoded_kmer = 0;
 
-        unsigned long key = keys[i] >> offset;
-        for (int j = 0; j < bits; j++) {
-            if (key & 1) {
-                for (int k = 0; k < n_hash; k++) {
-                    dst[i * n_hash + k] ^=
-                        d_seeds[(j + offset) * n_hash + k];
+        // Hashing of the first symbols, which don't yet generate a k-mer of
+        // the wanted length
+        for (i = 0; i < max_length - 1; i++) {
+            uint8_t symbol;
+
+            switch (data[start_pos + i]) {
+            case 'A':
+                symbol = 0;
+                break;
+            case 'C':
+                symbol = 1;
+                break;
+            case 'T':
+                symbol = 2;
+                break;
+            case 'G':
+                symbol = 3;
+                break;
+            default:
+                sequence_end = true;
+                break;
+            }
+
+            if (sequence_end)
+                break;
+
+            packedArraySet<2, uint64_t>(&encoded_kmer, i, symbol);
+
+            hashes.vec ^= d_seeds[i][symbol].vec;
+        }
+
+        if (sequence_end) {
+            continue;
+        }
+
+        // Hashes for relevant lengths
+        for (; i < max_length; i++) {
+            uint8_t symbol;
+
+            switch (data[start_pos + i]) {
+            case 'A':
+                symbol = 0;
+                break;
+            case 'C':
+                symbol = 1;
+                break;
+            case 'T':
+                symbol = 2;
+                break;
+            case 'G':
+                symbol = 3;
+                break;
+            default:
+                sequence_end = true;
+                break;
+            }
+
+            packedArraySet<2, uint64_t>(&encoded_kmer, i, symbol);
+
+            // Add to sketch
+            /*__shared__ extern uint32_t min_hits[];
+            if (hash_index == 0)
+                min_hits[start_index] = std::numeric_limits<uint32_t>::max();*/
+
+            __syncthreads();
+
+            hashes.vec ^= d_seeds[i][symbol].vec;
+
+            int32_t counters[N_HASH];
+            for (int j = 0; j < N_HASH; j++) {
+                counters[j] = sketches[i - min_length + 1][j][hashes.val[j]];
+            }
+
+            int32_t min_hits = counters[0];
+            for (int j = 1; j < N_HASH; j++)
+                min_hits = min(min_hits, counters[j]);
+
+            //atomicMin(&min_hits[start_index], counter);
+
+            __syncthreads();
+
+            for (int j = 0; j < N_HASH; j++) {
+                if (counters[j] == min_hits) {
+                    atomicAdd(&sketches[i - min_length + 1][j][hashes.val[j]], 1);
                 }
             }
-            key >>= 1;
+
+            if (min_hits >= d_thresholds[i - min_length + 1]) {
+                hashTableInsert<HASH_BITS>(
+                    &heavy_hitters[i - min_length + 1],
+                    encoded_kmer,
+                    min_hits
+                );
+            }
         }
     }
 }
@@ -105,7 +195,7 @@ void sketchWorker(
     for (int n = start; n < settings.n_length; n += stride) {
         uint64_t mask = ~(~0UL << ((settings.min_length + n) * 2));
 
-        Sketch sketch = {0};
+        Sketch<uint16_t, N_HASH, HASH_BITS> sketch = {0};
         int length = settings.min_length + n;
 
         std::unordered_map<uint64_t, int> heavy_hitters;
@@ -137,14 +227,14 @@ void sketchWorker(
                 uint16_t* hashes = &h_hashes[i * N_HASH];
 
                 for (int j = 0; j < N_HASH; j++) {
-                    if (sketch.count[j][hashes[j]] < min_hits) {
-                        min_hits = sketch.count[j][hashes[j]];
+                    if (sketch[j][hashes[j]] < min_hits) {
+                        min_hits = sketch[j][hashes[j]];
                     }
                 }
 
                 for (int j = 0; j < N_HASH; j++) {
-                    if (sketch.count[j][hashes[j]] == min_hits) {
-                        sketch.count[j][hashes[j]]++;
+                    if (sketch[j][hashes[j]] == min_hits) {
+                        sketch[j][hashes[j]]++;
                     }
                 }
 
@@ -194,6 +284,14 @@ void sketchWorker(
 }
 
 
+// Move pointer to the postion after the last new line
+void seekLastNewline(char** pos) {
+    while(*(*pos - 1) != '\n') {
+        (*pos)--;
+    }
+}
+
+
 int main(int argc, char* argv[]) {
     if (argc < 5) {
         std::cerr
@@ -226,157 +324,109 @@ int main(int argc, char* argv[]) {
     }
 
     // Generate seeds
-    uint16_t* h_seeds = new uint16_t[N_HASH * MAX_LENGTH * 2];
-    for (int i = 0; i < N_HASH * MAX_LENGTH * 2; i++)
+    const size_t n_seeds = sizeof(d_seeds) / sizeof(uint16_t);
+    uint16_t h_seeds[sizeof(d_seeds) / sizeof(uint16_t)];
+    for (unsigned int i = 0; i < n_seeds; i++) {
         h_seeds[i] = rand() & ~(~0UL << HASH_BITS);
-    cudaMemcpyToSymbol(d_seeds, h_seeds, sizeof(d_seeds));
-    cudaDeviceSynchronize();
-    delete[] h_seeds;
+    }
+    gpuErrchk(cudaMemcpyToSymbol(d_seeds, h_seeds, sizeof(d_seeds)));
+    gpuErrchk(cudaDeviceSynchronize());
+
+    // Copy thresholds
+    gpuErrchk(cudaMemcpyToSymbol(
+        d_thresholds,
+        settings.threshold.data(),
+        sizeof(int) * settings.threshold.size()
+    ));
 
     // Load memory mapped files
     MappedFile test_file = MappedFile::load(argv[1]);
     MappedFile control_file = MappedFile::load(argv[2]);
 
     // Heavy-hitters containers
-    std::vector<std::unordered_map<uint64_t, int>> heavy_hitters;
-    heavy_hitters.resize(settings.n_length);
+    HashTable<HASH_BITS>* h_heavyhitters =
+        new HashTable<HASH_BITS>[settings.n_length];
+    HashTable<HASH_BITS>* d_heavyhitters;
+    gpuErrchk(cudaMalloc(
+        &d_heavyhitters,
+        sizeof(HashTable<HASH_BITS>) * settings.n_length
+    ));
+    gpuErrchk(cudaMemset(
+        d_heavyhitters,
+        0,
+        sizeof(HashTable<HASH_BITS>) * settings.n_length
+    ));
 
-    // Allocate gpu memory
-    uint64_t* d_data_test;
+    // Allocate gpu memory for data transfer
+    char* d_data_test;
     uint16_t* d_hashes;
-    gpuErrchk(cudaMalloc(&d_data_test, MAX_BUFFER_SIZE * sizeof(uint64_t)));
+    gpuErrchk(cudaMalloc(&d_data_test, MAX_BUFFER_SIZE));
     gpuErrchk(cudaMalloc(
         &d_hashes,
-        MAX_BUFFER_SIZE * settings.n_length * N_HASH* sizeof(uint16_t)));
+        MAX_BUFFER_SIZE * settings.n_length * N_HASH* sizeof(uint16_t)
+    ));
+
+    // Sketches data structures
+    Sketch<int32_t, N_HASH, HASH_BITS>* d_sketches;
+    gpuErrchk(cudaMalloc(
+        &d_sketches,
+        sizeof(Sketch<int32_t, N_HASH, HASH_BITS>) * settings.n_length
+    ));
 
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
-    // Parse data set and transfer to device
-    std::vector<unsigned char> test_lengths;
-    std::vector<unsigned long> test_data = parseFasta(
+    int batch_size = test_file.size() < MAX_BUFFER_SIZE ? test_file.size() : MAX_BUFFER_SIZE;
+
+    gpuErrchk(cudaMemcpy(
+        d_data_test,
         test_file.data(),
-        test_file.size(),
+        batch_size,
+        cudaMemcpyHostToDevice
+    ));
+
+    int block_size = 4 * settings.max_length;//256;
+    int num_blocks = 1;//batch_size / block_size;
+    countmincu<<<num_blocks, block_size>>>(
+        d_data_test,
+        batch_size,
+        d_sketches,
         settings.min_length,
-        ~(~0UL << (settings.max_length * 2)),
-        &test_lengths);
+        settings.max_length,
+        d_heavyhitters
+    );
 
-    auto preprocessing_time = std::chrono::steady_clock::now();
+    gpuErrchk(cudaDeviceSynchronize());
 
-    // Parse control file during hash calculation
-    std::vector<unsigned char> control_lengths;
-    std::vector<unsigned long> control_data = parseFasta(
-        control_file.data(),
-        control_file.size(),
-        settings.min_length * 2,
-        ~(~0UL << (settings.max_length * 2)),
-        &control_lengths);
-
-    // Create threads
-    int n_threads = settings.n_length;
-    std::vector<std::thread> threads;
-    std::mutex* hash_locks = new std::mutex[n_threads * 2];
-    threads.reserve(n_threads);
-
-    for (int i = 0; i < n_threads; i++) {
-        hash_locks[2 * i].lock();
-    }
-
-    unsigned long n_data_test = test_data.size();
-
-    for (int n = 0; n < n_data_test; n += MAX_BUFFER_SIZE) {
-        unsigned long batch_size;
-        if (n_data_test - n > MAX_BUFFER_SIZE) {
-            batch_size = MAX_BUFFER_SIZE;
-        }
-        else {
-            batch_size = n_data_test - n;
-        }
-
-        for (int i = 0; i < n_threads; i++) {
-            hash_locks[2 * i + 1].lock();
-        }
-
-        cudaMemsetAsync(
-            d_hashes, 0, MAX_BUFFER_SIZE * N_HASH * sizeof(uint16_t));
-
-        // Copy sequences to device
-        gpuErrchk(cudaMemcpyAsync(
-            d_data_test,
-            &test_data[n],
-            batch_size * sizeof(unsigned long),
-            cudaMemcpyHostToDevice));
-
-        // Calculate hashes for the first length.
-        // The first is a special case since it needs to hash over MIN_LENGTH
-        // symbols instead of only one
-        int block_size = 256;
-        int num_blocks = batch_size / block_size;
-
-        hashH3<N_HASH><<<num_blocks, block_size>>>(
-            batch_size,
-            settings.min_length * 2,
-            d_data_test,
-            &d_hashes[0],
-            &d_hashes[0],
-            0);
-        gpuErrchk(cudaPeekAtLastError());
-
-        // Compute for the rest of the k-mers lengths
-        for (int i = 1; i < settings.n_length; i++) {
-            hashH3<N_HASH><<<num_blocks, block_size>>>(
-                batch_size,
-                2,
-                d_data_test,
-                &d_hashes[MAX_BUFFER_SIZE * N_HASH * (i - 1)],
-                &d_hashes[MAX_BUFFER_SIZE * N_HASH * i],
-                (settings.min_length + i - 1) * 2);
-            gpuErrchk(cudaPeekAtLastError());
-        }
-
-        gpuErrchk(cudaDeviceSynchronize());
-
-        for (int i = 0; i < n_threads; i++) {
-            hash_locks[2 * i].unlock();
-        }
-
-        if (n == 0) {
-            for (int i = 0; i < n_threads; i++) {
-                threads.emplace_back(
-                    sketchWorker,
-                    settings,
-                    &hash_locks[2 * i],
-                    i,
-                    n_threads,
-                    d_hashes,
-                    &test_data,
-                    &control_data,
-                    &test_lengths,
-                    &control_lengths,
-                    &heavy_hitters
-                );
-            }
-        }
-    }
-
-    // Join worker threads
-    for (int i = 0; i < threads.size(); i++) {
-        threads[i].join();
-    }
+    gpuErrchk(cudaMemcpy(
+        h_heavyhitters,
+        d_heavyhitters,
+        sizeof(HashTable<HASH_BITS>) * settings.n_length,
+        cudaMemcpyDeviceToHost
+    ));
 
     // End time measurement
     auto end_time = std::chrono::steady_clock::now();
-    std::chrono::duration<double> preprocessing_diff = preprocessing_time - start_time;
     std::chrono::duration<double> total_diff = end_time - start_time;
 
-    std::clog << "Preprocessing time: " << preprocessing_diff.count() << " s" << std::endl;
     std::clog << "Execution time: " << total_diff.count() << " s" << std::endl;
-    std::clog << "Data vectors: " << n_data_test << std::endl;
 
     // Print heavy-hitters
     int heavy_hitters_count = 0;
 
     for (int n = 0; n < settings.n_length; n++) {
+        for (int i = 0; i < h_heavyhitters->n_slots; i++) {
+            if (h_heavyhitters[n].slots[i].used) {
+                heavy_hitters_count++;
+                std::cout
+                    << sequenceToString(
+                        h_heavyhitters[n].slots[i].key, settings.min_length + n)
+                    << std::endl;
+            }
+        }
+    }
+
+    /*for (int n = 0; n < settings.n_length; n++) {
         heavy_hitters_count += heavy_hitters[n].size();
         std::clog
             << "Heavy-hitters (length " << settings.min_length + n << "): "
@@ -387,7 +437,7 @@ int main(int argc, char* argv[]) {
                 << sequenceToString(x.first, settings.min_length + n)
                 << std::endl;
         }
-    }
+    }*/
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
 
@@ -398,8 +448,6 @@ int main(int argc, char* argv[]) {
     // cudaFree(d_heavy_hitters);
     // cudaFree(heavy_hitters_count);
     // cudaFreeHost(h_data);
-
-    delete[] hash_locks;
 
     return 0;
 }

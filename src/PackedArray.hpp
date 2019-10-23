@@ -1,13 +1,17 @@
 // Fixed size arraay that packs sub-byte sized data
+#pragma once
 
 #include <cstring>
 #include <functional>
 
 template <int symbol_size, int length, typename BaseType = unsigned long>
 struct PackedArray {
-private:
-    static_assert(sizeof(BaseType) * 8 >= symbol_size);
+    static_assert(
+        sizeof(BaseType) * 8 >= symbol_size,
+        "Symbol size in bytes should fit in the base type"
+    );
 
+private:
     constexpr static int values_per_data = sizeof(BaseType) * 8 / symbol_size;
     constexpr static int total_data =
         (length + values_per_data - 1) / values_per_data;;

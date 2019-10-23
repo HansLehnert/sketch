@@ -4,6 +4,7 @@
  * @file fasta.hpp
  * @author Hans Lehnert
  */
+#pragma once
 
 #include <vector>
 #include <string>

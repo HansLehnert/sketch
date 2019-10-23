@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstring>
 
 template <typename T, int n_hash, int n_bits>
