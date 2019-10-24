@@ -11,18 +11,18 @@ struct HashTable {
 
     struct Slot {
         bool used;
-        uint32_t key;
-        uint64_t value;
+        uint64_t key;
+        int32_t value;
     } slots[n_slots];
 };
 
 template <int bits>
 __device__ void hashTableInsert(
         HashTable<bits>* table,
-        uint32_t key,
-        uint64_t value
+        uint64_t key,
+        int32_t value
 ) {
-    uint32_t hash = key & table->mask;  // The last bits are used as fast hash
+    uint64_t hash = key & table->mask;  // The last bits are used as fast hash
 
     while (table->slots[hash].used && table->slots[hash].key != key) {
         hash = (hash + 1) & table->mask;
@@ -31,4 +31,20 @@ __device__ void hashTableInsert(
     table->slots[hash].used = true;
     table->slots[hash].key = key;
     table->slots[hash].value = value;
+}
+
+template <int bits>
+__device__ bool hashTableGet(
+        HashTable<bits>* table,
+        uint64_t key,
+        int32_t** value
+) {
+    uint64_t hash = key & table->mask;  // The last bits are used as fast hash
+
+    while (table->slots[hash].key != key && table->slots[hash].used) {
+        hash = (hash + 1) & table->mask;
+    }
+
+    *value = &(table->slots[hash].value);
+    return table->slots[hash].used;
 }
