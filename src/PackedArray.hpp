@@ -50,7 +50,6 @@ public:
 
 
 namespace std {
-    template<>
     template<int symbol_size, int length, typename BaseType>
     struct hash<PackedArray<symbol_size, length, BaseType>> {
         size_t operator()(
