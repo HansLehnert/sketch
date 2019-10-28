@@ -8,13 +8,10 @@
  */
 
 #include <iostream>
-#include <fstream>
 #include <string>
-#include <vector>
+//#include <vector>
 #include <chrono>
 #include <limits>
-#include <thread>
-#include <mutex>
 #include <unordered_map>
 
 #include "cuda_error.h"
@@ -30,7 +27,7 @@ const unsigned int N_HASH = 4;
 const unsigned int HASH_BITS = 14;
 const unsigned int HASH_TABLE_BITS = 10;
 
-const unsigned int MAX_BUFFER_SIZE = 1 << 25;
+const unsigned int MAX_BUFFER_SIZE = 1 << 22;  // 4 MB
 
 union HashSet {
     uint64_t vec;
@@ -56,18 +53,24 @@ struct SketchSettings {
 //
 // Must be called with only 1 block due to heavy dependence on thread
 // synchronization. Block size should be equal or less to the max_length.
+// If complete_sequences is true, only starting points where all lengths can be
+// extracted will be used. This is used to handle processing in chunks
+// correctly
 __global__ void countmincu(
         char* data,
         const size_t data_length,
         const int min_length,
         const int max_length,
+        const bool complete_sequences,
         Sketch<int32_t, N_HASH, HASH_BITS>* sketches,
         HashTable<HASH_TABLE_BITS>* heavy_hitters
 ) {
     // A delay is added to prevent threads from updating the same sketch on
     // concurrent updates
-    const int32_t delay = threadIdx.x % max_length;
-    const uint32_t last_pos = data_length - min_length + 1;
+    // const int32_t delay = threadIdx.x % max_length;
+
+    const uint32_t last_pos =
+        data_length - (complete_sequences ? max_length : min_length);
 
     uint32_t start_pos = threadIdx.x; // Start position refers to the start of the string
     for (; start_pos < last_pos; start_pos += blockDim.x) {
@@ -156,6 +159,7 @@ __global__ void controlStage(
         const size_t data_length,
         const int32_t min_length,
         const int32_t max_length,
+        const bool complete_sequences,
         const int growth,
         HashTable<HASH_TABLE_BITS>* heavy_hitters
 ) {
@@ -168,7 +172,8 @@ __global__ void controlStage(
             heavy_hitters[blockIdx.x].slots[i].value / growth;
     }
 
-    const uint32_t last_pos = data_length - min_length + 1;
+    const uint32_t last_pos =
+        data_length - (complete_sequences ? max_length : min_length);
 
     for (int32_t start_pos = threadIdx.x; start_pos < last_pos; start_pos += blockDim.x) {
         bool sequence_end = false;
@@ -307,51 +312,103 @@ int main(int argc, char* argv[]) {
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
-    for (int i = 0; i < test_file.size(); i += MAX_BUFFER_SIZE) {
-        uint64_t batch_size = std::min<uint64_t>(
-            MAX_BUFFER_SIZE,
-            test_file.size()// - i * MAX_BUFFER_SIZE
-        );
+    int i = 0;
+    int active_buffer = 0;
+    int final_chunk = false;
+
+    while (!final_chunk) {
+        uint64_t batch_size;
+        uint64_t bytes_left = test_file.size() - i;
+
+        if (bytes_left <= MAX_BUFFER_SIZE) {
+            batch_size = bytes_left;
+            final_chunk = true;
+        }
+        else {
+            batch_size = MAX_BUFFER_SIZE;
+        }
 
         // There are 2 buffers used for transfering data to GPU an we
         // alternate using them
-        //char* buffer = d_data_test + MAX_BUFFER_SIZE * (i % 2);
+        char* buffer = d_data_test + MAX_BUFFER_SIZE * active_buffer;
 
         gpuErrchk(cudaMemcpy(
-            d_data_test, test_file.data(), batch_size, cudaMemcpyHostToDevice));
+            buffer, test_file.data() + i, batch_size, cudaMemcpyHostToDevice));
 
-        int block_size = 256;
         int num_blocks = 1;  // Must be 1
+        int block_size = 256;
         countmincu<<<num_blocks, block_size>>>(
-            d_data_test,
+            buffer,
             batch_size,
             settings.min_length,
             settings.max_length,
+            !final_chunk,
             d_sketches,
             d_heavyhitters
         );
 
-        break;
+        std::clog
+            << "countminCU" << std::endl
+            << '\t' << reinterpret_cast<size_t>(buffer) << std::endl
+            << '\t' << batch_size << std::endl
+            << '\t' << settings.min_length << std::endl
+            << '\t' << settings.max_length << std::endl
+            << '\t' << !final_chunk << std::endl
+            << '\t' << reinterpret_cast<size_t>(d_sketches) << std::endl
+            << '\t' << reinterpret_cast<size_t>(d_heavyhitters) << std::endl;
+
+        i += batch_size - settings.max_length + 1;
+        active_buffer = active_buffer ? 0 : 1;
     }
 
     gpuErrchk(cudaDeviceSynchronize());
 
-    uint64_t batch_size = control_file.size() < MAX_BUFFER_SIZE ? control_file.size() : MAX_BUFFER_SIZE;
-    gpuErrchk(cudaMemcpy(
-        d_data_control,
-        control_file.data(),
-        batch_size,
-        cudaMemcpyHostToDevice
-    ));
+    i = 0;
+    final_chunk = false;
+    while (!final_chunk) {
+        uint64_t batch_size;
+        uint64_t bytes_left = control_file.size() - i;
 
-    controlStage<<<settings.n_length, 512>>>(
-        d_data_control,
-        batch_size,
-        settings.min_length,
-        settings.max_length,
-        settings.growth,
-        d_heavyhitters
-    );
+        if (bytes_left <= MAX_BUFFER_SIZE) {
+            batch_size = bytes_left;
+            final_chunk = true;
+        }
+        else {
+            batch_size = MAX_BUFFER_SIZE;
+        }
+
+        // There are 2 buffers used for transfering data to GPU an we
+        // alternate using them
+        char* buffer = d_data_test + MAX_BUFFER_SIZE * active_buffer;
+
+        gpuErrchk(cudaMemcpy(
+            buffer, control_file.data(), batch_size, cudaMemcpyHostToDevice));
+
+        int num_blocks = settings.n_length;  // Blocks process a single length
+        int block_size = 512;
+        controlStage<<<num_blocks, block_size>>>(
+            buffer,
+            batch_size,
+            settings.min_length,
+            settings.max_length,
+            !final_chunk,
+            settings.growth,
+            d_heavyhitters
+        );
+
+        std::clog
+            << "controlStage" << std::endl
+            << '\t' << reinterpret_cast<size_t>(buffer) << std::endl
+            << '\t' << batch_size << std::endl
+            << '\t' << settings.min_length << std::endl
+            << '\t' << settings.max_length << std::endl
+            << '\t' << !final_chunk << std::endl
+            << '\t' << settings.growth << std::endl
+            << '\t' << reinterpret_cast<size_t>(d_heavyhitters) << std::endl;
+
+        i += batch_size - settings.max_length + 1;
+        active_buffer = active_buffer ? 0 : 1;
+    }
 
     gpuErrchk(cudaDeviceSynchronize());
 
@@ -362,18 +419,7 @@ int main(int argc, char* argv[]) {
         cudaMemcpyDeviceToHost
     ));
 
-
-    Sketch<int, N_HASH, HASH_BITS>* h_sketches;
-    h_sketches = new Sketch<int, N_HASH, HASH_BITS>[settings.n_length];
-    gpuErrchk(cudaMemcpy(
-        h_sketches,
-        d_sketches,
-        sizeof(Sketch<int, N_HASH, HASH_BITS>) * settings.n_length,
-        cudaMemcpyDeviceToHost
-    ));
-
     gpuErrchk(cudaDeviceSynchronize());
-
 
     // End time measurement
     auto end_time = std::chrono::steady_clock::now();
@@ -398,6 +444,23 @@ int main(int argc, char* argv[]) {
                     << std::endl;
                 count += h_heavyhitters[n].slots[i].value;
             }
+        }
+    }
+
+
+    Sketch<int, N_HASH, HASH_BITS>* h_sketches;
+    h_sketches = new Sketch<int, N_HASH, HASH_BITS>[settings.n_length];
+    gpuErrchk(cudaMemcpy(
+        h_sketches,
+        d_sketches,
+        sizeof(Sketch<int, N_HASH, HASH_BITS>) * settings.n_length,
+        cudaMemcpyDeviceToHost
+    ));
+
+    count = 0;
+    for (int i = 0; i < N_HASH; i++) {
+        for (int j = 0; j < (1 << HASH_BITS); j++) {
+            count += h_sketches[0][i][j];
         }
     }
 
