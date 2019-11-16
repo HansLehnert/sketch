@@ -103,14 +103,16 @@ for program_name in programs:
             # Find transfer and hash times (for CUDA)
             if 'cuda' in programs[program_name]:
                 transfer_times = re.findall(
-                    '(\S*)\s+(?:\S+\s+){4}\[CUDA memcpy (.*)\]', result.stderr)
+                    r'(\S*)\s+(?:\S+\s+){4}\[CUDA memcpy (.*)\]',
+                    result.stderr
+                )
 
                 for time, name in transfer_times:
                     metric_name = '{}-transfer-time'.format(name)
                     metrics[metric_name] = time
 
                 hash_time = re.search(
-                    '(\S*)\s+(?:\S+\s+){4}void hashH3', result.stderr)
+                    r'(\S*)\s+(?:\S+\s+){4}void hashH3', result.stderr)
 
                 if hash_time is not None:
                     metrics['hash-runtime'] = hash_time.group(1)
@@ -125,7 +127,7 @@ for program_name in programs:
 
             # Find heavy-hitters
             heavy_hitters = re.search(
-                'Heavy-hitters \(total\): ([0-9]*)', result.stderr)
+                r'Heavy-hitters \(total\): ([0-9]*)', result.stderr)
 
             if heavy_hitters is not None:
                 metrics['heavy-hitters'] = heavy_hitters.group(1)
@@ -149,26 +151,30 @@ for program_name in programs:
         if 'cuda' in programs[program_name] and args.cuda_metrics:
             # Occupancy
             print('[cuda metrics]', end='', flush=True)
-            command = ['nvprof', '--metrics', 'achieved_occupancy']
+            metrics = ['sm__warps_active.avg.pct_of_peak_sustained_active']
+            command = ['nv-nsight-cu-cli', '--metrics'] + metrics
             command += base_command
 
             result = subprocess.run(
                 command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 universal_newlines=True)
 
-            occupancy = re.search(
-                'Achieved Occupancy\s+([0-9.]*)\s+([0-9.]*)\s+([0-9.]*)',
-                result.stderr)
+            for metric in metrics:
+                metric_results = re.findall(
+                    metric + r'\s*(%)\s*([0-9,]*)', result.stdout)
 
-            if occupancy is not None:
-                runs['{}_occupancy-min'.format(dataset_name)] = (
-                    [occupancy.group(1)] + ['-'] * (n_runs - 1))
-                runs['{}_occupancy-max'.format(dataset_name)] = (
-                    [occupancy.group(2)] + ['-'] * (n_runs - 1))
-                runs['{}_occupancy-avg'.format(dataset_name)] = (
-                    [occupancy.group(3)] + ['-'] * (n_runs - 1))
+                if len(metric_results) > 0:
+                    metric_avg = 0
+
+                    for metric_result in metric_results:
+                        metric_avg += float(metric_result[1].replace(',','.'))
+
+                    metric_avg /= len(metric_results)
+
+                    runs['{}_{}'.format(dataset_name, metric)] = (
+                        [metric_avg] + ['-'] * (n_runs - 1))
 
             # Power
             power_filename = 'out/{}_{}_power.csv'.format(
@@ -185,10 +191,6 @@ for program_name in programs:
                 stderr=subprocess.DEVNULL,
                 universal_newlines=True)
 
-            subprocess.run(
-                base_command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL)
             nvidia_smi.terminate()
 
             power_log.close()
