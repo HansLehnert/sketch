@@ -4,16 +4,19 @@
 
 class MappedFile {
 public:
+    MappedFile(std::string filename, bool load = true);
     ~MappedFile();
 
-    static MappedFile load(std::string filename);
+    void load();
 
+    bool isLoaded();
     const char* data();
     int size();
 
 private:
-    MappedFile() = default;
 
+    bool m_isLoaded;
+    std::string m_filename;
     int m_fd;
     int m_size;
     char* m_data;

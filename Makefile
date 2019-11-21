@@ -20,7 +20,7 @@ endif
 
 # Executable files
 EXECUTABLES += sketch
-# EXECUTABLES += sketch_multithread
+EXECUTABLES += sketch_multithread
 
 ifdef USE_AVX
 	# EXECUTABLES_AVX += sketch_avx

@@ -16,6 +16,7 @@
 #include <thread>
 #include <mutex>
 #include <unordered_map>
+#include <memory>
 
 #include "fasta.hpp"
 #include "MappedFile.hpp"
@@ -91,8 +92,8 @@ void sketchWorker(
         int start,
         int stride,
         const uint16_t* d_hashes,
-        const std::vector<unsigned long>* test_data,
-        const std::vector<unsigned long>* control_data,
+        std::shared_ptr<std::vector<unsigned long>> test_data,
+        std::shared_ptr<std::vector<unsigned long>> control_data,
         const std::vector<unsigned char>* test_lengths,
         const std::vector<unsigned char>* control_lengths,
         std::vector<std::unordered_map<uint64_t, int>>* heavy_hitters_vec) {
@@ -234,8 +235,8 @@ int main(int argc, char* argv[]) {
     delete[] h_seeds;
 
     // Load memory mapped files
-    MappedFile test_file = MappedFile::load(argv[1]);
-    MappedFile control_file = MappedFile::load(argv[2]);
+    MappedFile test_file(argv[1]);
+    MappedFile control_file(argv[2]);
 
     // Heavy-hitters containers
     std::vector<std::unordered_map<uint64_t, int>> heavy_hitters;
@@ -254,23 +255,31 @@ int main(int argc, char* argv[]) {
 
     // Parse data set and transfer to device
     std::vector<unsigned char> test_lengths;
-    std::vector<unsigned long> test_data = parseFasta(
-        test_file.data(),
-        test_file.size(),
-        settings.min_length,
-        ~(~0UL << (settings.max_length * 2)),
-        &test_lengths);
+    std::shared_ptr<std::vector<unsigned long>> test_data;
+    test_data = std::make_shared<std::vector<unsigned long>>(
+        parseFasta(
+            test_file.data(),
+            test_file.size(),
+            settings.min_length,
+            ~(~0UL << (settings.max_length * 2)),
+            &test_lengths
+        )
+    );
 
     auto preprocessing_time = std::chrono::steady_clock::now();
 
     // Parse control file during hash calculation
     std::vector<unsigned char> control_lengths;
-    std::vector<unsigned long> control_data = parseFasta(
-        control_file.data(),
-        control_file.size(),
-        settings.min_length * 2,
-        ~(~0UL << (settings.max_length * 2)),
-        &control_lengths);
+    std::shared_ptr<std::vector<unsigned long>> control_data;
+    control_data = std::make_shared<std::vector<unsigned long>>(
+        parseFasta(
+            control_file.data(),
+            control_file.size(),
+            settings.min_length * 2,
+            ~(~0UL << (settings.max_length * 2)),
+            &control_lengths
+        )
+    );
 
     // Create threads
     int n_threads = settings.n_length;
@@ -282,7 +291,7 @@ int main(int argc, char* argv[]) {
         hash_locks[2 * i].lock();
     }
 
-    unsigned long n_data_test = test_data.size();
+    unsigned long n_data_test = test_data->size();
 
     for (int n = 0; n < n_data_test; n += MAX_BUFFER_SIZE) {
         unsigned long batch_size;
@@ -303,7 +312,7 @@ int main(int argc, char* argv[]) {
         // Copy sequences to device
         gpuErrchk(cudaMemcpyAsync(
             d_data_test,
-            &test_data[n],
+            &test_data->at(n),
             batch_size * sizeof(unsigned long),
             cudaMemcpyHostToDevice));
 
@@ -349,8 +358,8 @@ int main(int argc, char* argv[]) {
                     i,
                     n_threads,
                     d_hashes,
-                    &test_data,
-                    &control_data,
+                    test_data,
+                    control_data,
                     &test_lengths,
                     &control_lengths,
                     &heavy_hitters
@@ -358,6 +367,11 @@ int main(int argc, char* argv[]) {
             }
         }
     }
+
+    // Delete smart pointerto datasets so they can be deallocated when the
+    // worker threads are done
+    test_data = nullptr;
+    control_data = nullptr;
 
     // Join worker threads
     for (int i = 0; i < threads.size(); i++) {

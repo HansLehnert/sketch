@@ -334,8 +334,8 @@ int main(int argc, char* argv[]) {
         memset(&sketch[i], 0, sizeof(Sketch));
 
     // Load memory mapped files
-    MappedFile test_file = MappedFile::load(argv[1]);
-    MappedFile control_file = MappedFile::load(argv[2]);
+    MappedFile test_file(argv[1]);
+    MappedFile control_file(argv[2]);
 
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();

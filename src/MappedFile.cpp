@@ -6,31 +6,37 @@
 #include <fcntl.h>
 
 
-MappedFile::~MappedFile() {
-    munmap(m_data, m_size);
-    close(m_fd);
+MappedFile::MappedFile(std::string filename, bool load) : m_isLoaded(false) {
+    m_filename = filename;
+
+    if (load)
+        this->load();
+}
+
+void MappedFile::load() {
+    if (m_isLoaded)
+        return;
+
+    m_fd = open(m_filename.c_str(), O_RDONLY);
+
+    struct stat file_stat;
+    fstat(m_fd, &file_stat);
+
+    m_size = file_stat.st_size;
+    m_data = (char*)mmap(NULL, m_size, PROT_READ, MAP_PRIVATE, m_fd, 0);
+    m_isLoaded = true;
 }
 
 
-MappedFile MappedFile::load(std::string filename) {
-    MappedFile file;
+MappedFile::~MappedFile() {
+    if (m_isLoaded)
+        munmap(m_data, m_size);
+        close(m_fd);
+}
 
-    file.m_fd = open(filename.c_str(), O_RDONLY);
 
-    struct stat file_stat;
-    fstat(file.m_fd, &file_stat);
-
-    file.m_size = file_stat.st_size;
-
-    file.m_data = (char*)mmap(
-        NULL,
-        file.m_size,
-        PROT_READ,
-        MAP_PRIVATE,
-        file.m_fd,
-        0);
-
-    return file;
+bool MappedFile::isLoaded() {
+    return m_isLoaded;
 }
 
 

@@ -45,6 +45,7 @@ else:
 # TODO: Move to external file
 programs = {
     'bin/release/sketch': ['default'],
+    'bin/release/sketch_multithread': ['default'],
     'bin/release/sketch_avx_pipelined': ['avx'],
     'bin/release/sketch_cu': ['cuda']
 }
