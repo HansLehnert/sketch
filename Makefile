@@ -1,6 +1,6 @@
 NVCC = nvcc
 FLAGS_CPP = -std=c++11 -pthread
-FLAGS_CU = -std=c++11 --expt-relaxed-constexpr
+FLAGS_CU = -std=c++11 --expt-relaxed-constexpr -rdc=true -arch=sm_75
 FLAGS_AVX = -mavx -mavx2
 MKDIR = mkdir -p
 
