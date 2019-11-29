@@ -52,8 +52,7 @@ struct SketchSettings {
 
 // Populates sketch using the countmin-cu strategy and extract heavy-hitters
 //
-// Must be called with only 1 block due to heavy dependence on thread
-// synchronization. Block size should be equal or less to the max_length.
+// Grid size should be less than max_length for synchronization to be effective
 // If complete_sequences is true, only starting points where all lengths can be
 // extracted will be used. This is used to handle processing in chunks
 // correctly
@@ -97,7 +96,7 @@ __global__ void countmincu(
 
             int pos = i;
 
-            if (start_pos + pos >= data_length) {
+            if (start_pos > last_pos || start_pos + pos >= data_length) {
                 block.sync();
                 continue;
             }
@@ -130,8 +129,6 @@ __global__ void countmincu(
             packedArraySet<2, uint64_t>(&encoded_kmer, pos, symbol);
 
             hashes.vec ^= d_seeds[pos][symbol].vec;
-
-            //__syncthreads();
 
             // Add to sketch
             int32_t counters[N_HASH];
@@ -174,33 +171,35 @@ __global__ void countmincu(
     }
 }
 
+// Execute the control stage for the k-mer extracting process
+//
+// Grid size should be equal to the amount of k-mer lengths to evaluate
 __global__ void controlStage(
         char* data,
         const size_t data_length,
         const int32_t min_length,
         const int32_t max_length,
         const bool complete_sequences,
-        const int growth,
+        const float growth,
         HashTable<HASH_TABLE_BITS>* heavy_hitters
 ) {
     // Copy hash table to shared memory
     __shared__ HashTable<HASH_TABLE_BITS> s_heavy_hitters;
     for (int i = threadIdx.x; i < s_heavy_hitters.n_slots; i += blockDim.x) {
-        s_heavy_hitters.slots[i].used = heavy_hitters[blockIdx.x].slots[i].used;
-        s_heavy_hitters.slots[i].key = heavy_hitters[blockIdx.x].slots[i].key;
-        s_heavy_hitters.slots[i].value =
-            heavy_hitters[blockIdx.x].slots[i].value / growth;
+        s_heavy_hitters.slots[i] = heavy_hitters[blockIdx.x].slots[i];
+        s_heavy_hitters.slots[i].value /= growth;
     }
 
     const uint32_t last_pos =
         data_length - (complete_sequences ? max_length : min_length);
+    const uint32_t length = min_length + blockIdx.x;
 
     for (int32_t start_pos = threadIdx.x; start_pos < last_pos; start_pos += blockDim.x) {
         bool sequence_end = false;
 
         uint64_t encoded_kmer = 0;
 
-        for (int i = 0; i < max_length; i++) {
+        for (int i = 0; i < length; i++) {
             uint8_t symbol;
 
             switch (data[start_pos + i]) {
@@ -225,27 +224,29 @@ __global__ void controlStage(
                 break;
 
             packedArraySet<2, uint64_t>(&encoded_kmer, i, symbol);
+        }
 
-            if (i == min_length + blockIdx.x - 1) {
-                int32_t* counter;
-                bool found = hashTableGet<HASH_TABLE_BITS>(
-                    &s_heavy_hitters,
-                    encoded_kmer,
-                    &counter
-                );
+        if (sequence_end)
+            continue;
 
-                if (found) {
-                    atomicSub(counter, 1);
-                }
-            }
+        // Search for the sequence in the heavy-hitters hash table
+        int32_t* counter;
+        bool found = hashTableGet<HASH_TABLE_BITS>(
+            &s_heavy_hitters,
+            encoded_kmer,
+            &counter
+        );
+
+        if (found) {
+            atomicSub(counter, 1);
         }
     }
 
     __syncthreads();
 
     // Copy table back to global memory
-    for (int i = threadIdx.x; i < sizeof(s_heavy_hitters); i += blockDim.x) {
-        ((char*)&heavy_hitters[blockIdx.x])[i] = ((char*)&s_heavy_hitters)[i];
+    for (int i = threadIdx.x; i < s_heavy_hitters.n_slots; i += blockDim.x) {
+        heavy_hitters[blockIdx.x].slots[i] = s_heavy_hitters.slots[i];
     }
 }
 
@@ -326,6 +327,11 @@ int main(int argc, char* argv[]) {
         sizeof(Sketch<int32_t, N_HASH, HASH_BITS>) * settings.n_length
     ));
 
+    // Create a stream to avoid the default stream and allow transfer and
+    // execution overlap
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
 
@@ -350,8 +356,13 @@ int main(int argc, char* argv[]) {
         // alternate using them
         char* buffer = d_transfer_area + MAX_BUFFER_SIZE * active_buffer;
 
-        gpuErrchk(cudaMemcpy(
-            buffer, test_file.data() + i, batch_size, cudaMemcpyHostToDevice));
+        gpuErrchk(cudaMemcpyAsync(
+            buffer,
+            test_file.data() + i,
+            batch_size,
+            cudaMemcpyHostToDevice,
+            stream
+        ));
 
         uint32_t num_blocks = settings.max_length;
         uint32_t block_size = 512;
@@ -369,7 +380,9 @@ int main(int argc, char* argv[]) {
             (void*)countmincu,
             {num_blocks, 1, 1},
             {block_size, 1, 1},
-            args
+            args,
+            0,  // No shared memory use
+            stream
         ));
 
 #ifdef DEBUG
@@ -410,22 +423,28 @@ int main(int argc, char* argv[]) {
         // alternate using them
         char* buffer = d_transfer_area + MAX_BUFFER_SIZE * active_buffer;
 
-        gpuErrchk(cudaMemcpy(
+        gpuErrchk(cudaMemcpyAsync(
             buffer,
             control_file.data() + i,
             batch_size,
-            cudaMemcpyHostToDevice
+            cudaMemcpyHostToDevice,
+            stream
         ));
+
+        // We only need to scale the counters once, so the growth is set to 1
+        // beyond the first kernel call
+        // TODO: Move scaling to separate kernel
+        float growth = i == 0 ? settings.growth : 1;
 
         int num_blocks = settings.n_length;  // Blocks process a single length
         int block_size = 512;
-        controlStage<<<num_blocks, block_size>>>(
+        controlStage<<<num_blocks, block_size, 0, stream>>>(
             buffer,
             batch_size,
             settings.min_length,
             settings.max_length,
             !final_chunk,
-            settings.growth,
+            growth,
             d_heavyhitters
         );
 
@@ -468,8 +487,10 @@ int main(int argc, char* argv[]) {
     int count = 0;
     for (int n = 0; n < settings.n_length; n++) {
         for (int i = 0; i < h_heavyhitters->n_slots; i++) {
-            if (h_heavyhitters[n].slots[i].used && h_heavyhitters[n].slots[i].value > 0) {
-                heavy_hitters_count++;
+            if (h_heavyhitters[n].slots[i].used) {
+                if (h_heavyhitters[n].slots[i].value >= 0)
+                    heavy_hitters_count++;
+
                 std::cout
                     << sequenceToString(
                         h_heavyhitters[n].slots[i].key, settings.min_length + n)
@@ -513,13 +534,12 @@ int main(int argc, char* argv[]) {
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
     std::clog << "Count total: " << count << std::endl;
 
-    // Free shared memory
-    // cudaFree(d_data);
-    // cudaFree(d_sketch);
-    // cudaFree(d_hashes);
-    // cudaFree(d_heavy_hitters);
-    // cudaFree(heavy_hitters_count);
-    // cudaFreeHost(h_data);
+    // Free memory
+    cudaFree(d_transfer_area);
+    cudaFree(d_sketches);
+    cudaFree(d_heavyhitters);
+    delete[] h_sketches;
+    delete[] h_heavyhitters;
 
     return 0;
 }
