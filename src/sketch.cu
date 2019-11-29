@@ -13,6 +13,7 @@
 #include <chrono>
 #include <limits>
 #include <unordered_map>
+#include <cooperative_groups.h>
 
 #include "cuda_error.h"
 #include "fasta.hpp"
@@ -27,12 +28,14 @@ const unsigned int N_HASH = 4;
 const unsigned int HASH_BITS = 14;
 const unsigned int HASH_TABLE_BITS = 10;
 
-const unsigned int MAX_BUFFER_SIZE = 1 << 22;  // 4 MB
+const unsigned int MAX_BUFFER_SIZE = 1 << 23;  // 4 MB
 
 union HashSet {
     uint64_t vec;
     uint16_t val[N_HASH];
 };
+
+using namespace cooperative_groups;
 
 // Seeds
 __constant__ HashSet d_seeds[MAX_LENGTH][4];
@@ -47,7 +50,6 @@ struct SketchSettings {
 
     float growth;
 };
-
 
 // Populates sketch using the countmin-cu strategy and extract heavy-hitters
 //
@@ -69,11 +71,14 @@ __global__ void countmincu(
     // concurrent updates
     // const int32_t delay = threadIdx.x % max_length;
 
+    //grid_group grid = this_grid();
+
     const uint32_t last_pos =
         data_length - (complete_sequences ? max_length : min_length);
 
-    uint32_t start_pos = threadIdx.x; // Start position refers to the start of the string
-    for (; start_pos < last_pos; start_pos += blockDim.x) {
+    const uint32_t stride = blockDim.x * gridDim.x;
+    uint32_t start_pos = threadIdx.x; // Start position refers to the start of the sequence
+    for (; start_pos < last_pos; start_pos += stride) {
         bool sequence_end = false;
 
         HashSet hashes = {0};
@@ -84,9 +89,7 @@ __global__ void countmincu(
 
             if (pos < 0)
                 continue;
-            if (pos >= max_length)
-                break;
-            if (start_pos + pos >= data_length)
+            if (pos >= max_length || start_pos + pos >= data_length)
                 break;
 
             uint8_t symbol;
@@ -121,8 +124,6 @@ __global__ void countmincu(
             // Add to sketch
             int32_t counters[N_HASH];
             int32_t min_hits;
-
-            //hashTableInsert(&heavy_hitters[0], pos, max_length);
 
             if (pos >= min_length - 1) {
                 for (int j = 0; j < N_HASH; j++) {
@@ -206,7 +207,7 @@ __global__ void controlStage(
 
             packedArraySet<2, uint64_t>(&encoded_kmer, i, symbol);
 
-            if (i == blockIdx.x + min_length - 1) {
+            if (i == min_length + blockIdx.x - 1) {
                 int32_t* counter;
                 bool found = hashTableGet<HASH_TABLE_BITS>(
                     &s_heavy_hitters,
@@ -215,7 +216,7 @@ __global__ void controlStage(
                 );
 
                 if (found) {
-                    atomicAdd(counter, -1);
+                    atomicSub(counter, 1);
                 }
             }
         }
@@ -317,8 +318,8 @@ int main(int argc, char* argv[]) {
     int final_chunk = false;
 
     while (!final_chunk) {
-        uint64_t batch_size;
-        uint64_t bytes_left = test_file.size() - i;
+        size_t batch_size;
+        size_t bytes_left = test_file.size() - i;
 
         if (bytes_left <= MAX_BUFFER_SIZE) {
             batch_size = bytes_left;
@@ -335,17 +336,35 @@ int main(int argc, char* argv[]) {
         gpuErrchk(cudaMemcpy(
             buffer, test_file.data() + i, batch_size, cudaMemcpyHostToDevice));
 
-        int num_blocks = 1;  // Must be 1
-        int block_size = 256;
-        countmincu<<<num_blocks, block_size>>>(
-            buffer,
-            batch_size,
-            settings.min_length,
-            settings.max_length,
-            !final_chunk,
-            d_sketches,
-            d_heavyhitters
-        );
+        uint32_t num_blocks = settings.max_length;  // Must be 1
+        uint32_t block_size = 32;
+        bool complete_sequences = !final_chunk;
+        void* args[] = {
+            &buffer,
+            &batch_size,
+            &settings.min_length,
+            &settings.max_length,
+            &complete_sequences,
+            &d_sketches,
+            &d_heavyhitters
+        };
+        gpuErrchk(cudaLaunchCooperativeKernel(
+            (void*)countmincu,
+            {num_blocks, 1, 1},
+            {block_size, 1, 1},
+            args
+        ));
+
+        // countmincu<<<num_blocks, block_size>>>(
+        //     buffer,
+        //     batch_size,
+        //     settings.min_length,
+        //     settings.max_length,
+        //     !final_chunk,
+        //     d_sketches,
+        //     d_heavyhitters
+        // );
+
 
         std::clog
             << "countminCU" << std::endl
@@ -366,6 +385,7 @@ int main(int argc, char* argv[]) {
     i = 0;
     final_chunk = false;
     while (!final_chunk) {
+        break;
         uint64_t batch_size;
         uint64_t bytes_left = control_file.size() - i;
 
@@ -433,8 +453,8 @@ int main(int argc, char* argv[]) {
     int count = 0;
     for (int n = 0; n < settings.n_length; n++) {
         for (int i = 0; i < h_heavyhitters->n_slots; i++) {
-            if (h_heavyhitters[n].slots[i].used
-                    && h_heavyhitters[n].slots[i].value > 0) {
+            if (h_heavyhitters[n].slots[i].used) {
+                    //&& h_heavyhitters[n].slots[i].value > 0) {
                 heavy_hitters_count++;
                 std::cout
                     << sequenceToString(
