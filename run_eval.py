@@ -103,17 +103,21 @@ for program_name in programs:
             # Find transfer and hash times (for CUDA)
             if 'cuda' in programs[program_name]:
                 transfer_times = re.findall(
-                    '(\S*)\s+(?:\S+\s+){4}\[CUDA memcpy (.*)\]', result.stderr)
+                    r'(\S*)\s+(?:\S+\s+){4}\[CUDA memcpy (.*)\]',
+                    result.stderr
+                )
 
                 for time, name in transfer_times:
                     metric_name = '{}-transfer-time'.format(name)
                     metrics[metric_name] = time
 
-                hash_time = re.search(
-                    '(\S*)\s+(?:\S+\s+){4}void hashH3', result.stderr)
+                kernel_times = re.findall(
+                    r'([0-9.]+[muns.]+)\s+(?:\S+\s+){4}(?P<kernel>[^(\s]+)\(',
+                    result.stderr
+                )
 
-                if hash_time is not None:
-                    metrics['hash-runtime'] = hash_time.group(1)
+                for time, kernel in kernel_times:
+                    metrics['{}-kernel-runtime'.format(kernel)] = time
 
             # Find time reports in process output
             runtimes = re.findall(
