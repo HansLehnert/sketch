@@ -166,7 +166,7 @@ __global__ void countmincu(
         }
     }
 
-    for (int i = 0; i < blockDim.x - blockIdx.x - 1; i++) {
+    for (int i = 0; i < gridDim.x - blockIdx.x - 1; i++) {
         grid.sync();
     }
 }
