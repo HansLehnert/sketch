@@ -437,7 +437,7 @@ int main(int argc, char* argv[]) {
         float growth = i == 0 ? settings.growth : 1;
 
         int num_blocks = settings.n_length;  // Blocks process a single length
-        int block_size = 512;
+        int block_size = 2048;
         controlStage<<<num_blocks, block_size, 0, stream>>>(
             buffer,
             batch_size,
@@ -484,61 +484,37 @@ int main(int argc, char* argv[]) {
     // Print heavy-hitters
     int heavy_hitters_count = 0;
 
-    int count = 0;
     for (int n = 0; n < settings.n_length; n++) {
+        int partial_count = 0;
+
         for (int i = 0; i < h_heavyhitters->n_slots; i++) {
-            if (h_heavyhitters[n].slots[i].used) {
-                if (h_heavyhitters[n].slots[i].value >= 0)
-                    heavy_hitters_count++;
+            if (!h_heavyhitters[n].slots[i].used
+                    || h_heavyhitters[n].slots[i].value <= 0) {
+                continue;
+            }
 
                 std::cout
                     << sequenceToString(
                         h_heavyhitters[n].slots[i].key, settings.min_length + n)
-                    << " "
-                    << h_heavyhitters[n].slots[i].value
                     << std::endl;
+
+            partial_count++;
             }
-        }
-    }
 
+        heavy_hitters_count += partial_count;
 
-    Sketch<int, N_HASH, HASH_BITS>* h_sketches;
-    h_sketches = new Sketch<int, N_HASH, HASH_BITS>[settings.n_length];
-    gpuErrchk(cudaMemcpy(
-        h_sketches,
-        d_sketches,
-        sizeof(Sketch<int, N_HASH, HASH_BITS>) * settings.n_length,
-        cudaMemcpyDeviceToHost
-    ));
-
-    count = 0;
-    for (int i = 0; i < N_HASH; i++) {
-        for (int j = 0; j < (1 << HASH_BITS); j++) {
-            count += h_sketches[0][i][j];
-        }
-    }
-
-    /*for (int n = 0; n < settings.n_length; n++) {
-        heavy_hitters_count += heavy_hitters[n].size();
         std::clog
-            << "Heavy-hitters (length " << settings.min_length + n << "): "
-            << heavy_hitters[n].size() << std::endl;
-
-        for (auto x : heavy_hitters[n]) {
-            std::cout
-                << sequenceToString(x.first, settings.min_length + n)
-                << std::endl;
-        }
-    }*/
+            << "Heavy-hitters (" << settings.min_length + n << "): "
+            << partial_count << std::endl;
+    }
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
-    std::clog << "Count total: " << count << std::endl;
+
 
     // Free memory
     cudaFree(d_transfer_area);
     cudaFree(d_sketches);
     cudaFree(d_heavyhitters);
-    delete[] h_sketches;
     delete[] h_heavyhitters;
 
     return 0;
