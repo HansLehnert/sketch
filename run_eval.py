@@ -7,6 +7,7 @@ import csv
 import argparse
 import sys
 import json
+import os
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -48,6 +49,10 @@ programs = {
     'bin/release/sketch_avx_pipelined': ['avx'],
     'bin/release/sketch_cu': ['cuda']
 }
+
+# Create output directory
+if not os.path.isdir('./out/'):
+    os.mkdir('./out/')
 
 # Database description
 with open('datasets.json') as dataset_file:
