@@ -84,8 +84,8 @@ int main(int argc, char* argv[]) {
     }
 
     // Load memory mapped files
-    MappedFile test_file = MappedFile::load(argv[1]);
-    MappedFile control_file = MappedFile::load(argv[2]);
+    MappedFile test_file(argv[1]);
+    MappedFile control_file(argv[2]);
     const char* test_data = test_file.data();
     const char* control_data = control_file.data();
 

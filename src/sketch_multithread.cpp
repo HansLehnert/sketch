@@ -13,174 +13,314 @@
 #include <vector>
 #include <chrono>
 #include <limits>
-#include <thread>
 #include <unordered_set>
 #include <unordered_map>
+#include <thread>
+#include <memory>
+#include <mutex>
+#include <cstring>
 
 #include "fasta.hpp"
 #include "MappedFile.hpp"
+#include "Sketch.hpp"
+#include "PackedArray.hpp"
 
+typedef PackedArray<2, 32> Sequence;
 
-const unsigned int MIN_LENGTH = 10;
-const unsigned int MAX_LENGTH = 20;
-const unsigned int N_LENGTH = MAX_LENGTH - MIN_LENGTH + 1;
-
+// Number of hashes to use in the sketch
 const unsigned int N_HASH = 4;
+
+// Number of bits for the hashing seeds. Also determines the sketch size.
 const unsigned int HASH_BITS = 14;
 
-constexpr unsigned int THRESHOLD[] = {
-    365, 308, 257, 161, 150, 145, 145, 145, 145, 145, 145};
+// Growth parameter for control step
 const float GROWTH = 2;
 
 
-/**
- * @brief Compute H3 hash
- */
-unsigned int hashH3(unsigned long key, unsigned short* seeds, int bits) {
-    unsigned int result = 0;
-    for (int i = 0; i < bits; i++) {
-        if (key & 1)
-            result ^= seeds[i];
-        key >>= 1;
-    }
-    return result;
-}
+struct SketchSettings {
+    int min_length;
+    int max_length;
+    int n_length;
+
+    std::vector<int> threshold;
+
+    float growth;
+};
 
 
-void hashWorker(
-        MappedFile* test_file,
-        MappedFile* control_file,
-        std::unordered_set<unsigned long>* heavy_hitters,
-        int sequence_length,
-        unsigned long threshold) {
+void sketchWorker(
+    const unsigned short* seeds,
+    const int length,
+    const int threshold,
+    const float growth,
+    std::shared_ptr<MappedFile> test_file,
+    std::shared_ptr<MappedFile> control_file,
+    std::mutex* control_file_load_mutex,
+    std::unordered_map<Sequence, int>* heavy_hitters
+) {
+    Sketch<int, N_HASH, HASH_BITS> sketch;
+    memset(&sketch, 0, sizeof(sketch));
 
-    // Generate seeds
-    unsigned short seeds[N_HASH][sequence_length * 2];
-    for (unsigned int i = 0; i < N_HASH; i++) {
-        for (unsigned int j = 0; j < sequence_length * 2; j++) {
-            seeds[i][j] = rand() & ((1 << HASH_BITS) - 1);
-        }
-    }
+    // Test step
+    unsigned long test_size = test_file->size();
+    const char* test_data = test_file->data();
 
-    // Create sketch
-    unsigned int sketch[N_HASH][1 << HASH_BITS] = {0};
+    int kmer_start = 0;
 
-    // Parse data sets
-    std::vector<unsigned long> data_vectors = parseFasta(
-        test_file->data(), test_file->size(), sequence_length);
-    std::vector<unsigned long> control_vectors = parseFasta(
-        control_file->data(), control_file->size(), sequence_length);
+    while (kmer_start < test_size) {
+        bool sequence_end = false;
 
-    // Hash values
-    for (unsigned int i = 0; i < data_vectors.size(); i++) {
-        unsigned int min_hits = std::numeric_limits<unsigned int>::max();
-        unsigned int hashes[N_HASH];
+        unsigned short hashes[N_HASH] = {0};
+        Sequence encoded_kmer;
 
-        for (unsigned int j = 0; j < N_HASH; j++) {
-            hashes[j] = hashH3(data_vectors[i], seeds[j], sequence_length * 2);
-            if (sketch[j][hashes[j]] < min_hits) {
-                min_hits = sketch[j][hashes[j]];
+        int i = 0;
+        for (; i < length; i++) {
+            int symbol;
+
+            switch (test_data[kmer_start + i]) {
+            case 'A':
+                symbol = 0;
+                break;
+            case 'C':
+                symbol = 1;
+                break;
+            case 'T':
+                symbol = 2;
+                break;
+            case 'G':
+                symbol = 3;
+                break;
+            default:
+                sequence_end = true;
+                break;
+            }
+
+            if (sequence_end)
+                break;
+
+            encoded_kmer.set(i, symbol);
+
+            for (int j = 0; j < N_HASH; j++) {
+                hashes[j] ^= seeds[4 * N_HASH * i + 4 * j + symbol];
             }
         }
 
-        for (unsigned int j = 0; j < N_HASH; j++) {
+        if (sequence_end) {
+            kmer_start += i + 1;
+            continue;
+        }
+
+        // Add to sketch
+        unsigned int min_hits = std::numeric_limits<unsigned int>::max();
+
+        for (int j = 0; j < N_HASH; j++) {
+            int counter = sketch[j][hashes[j]];
+            if (counter < min_hits) {
+                min_hits = counter;
+            }
+        }
+
+        for (int j = 0; j < N_HASH; j++) {
             if (sketch[j][hashes[j]] == min_hits) {
                 sketch[j][hashes[j]]++;
             }
         }
 
-        if (min_hits + 1 == threshold) {
-            heavy_hitters->insert(data_vectors[i]);
-        }
-    }
-
-    // Get frequencies for heavy-hitters
-    std::unordered_map<unsigned long, int> frequencies;
-
-    for (auto i : *heavy_hitters) {
-        frequencies[i] = std::numeric_limits<int>::max();
-
-        for (unsigned int j = 0; j < N_HASH; j++) {
-            unsigned int hash = hashH3(i, seeds[j], sequence_length * 2);
-            if (sketch[j][hash] < frequencies[i]) {
-                frequencies[i] = sketch[j][hash];
-            }
+        if (min_hits + 1 >= threshold) {
+            (*heavy_hitters)[encoded_kmer] = min_hits;
         }
 
-        frequencies[i] /= GROWTH;
+        kmer_start++;
     }
+
+    test_file = nullptr;
+
+    // Scale frequencies
+    for (auto& heavy_hitter : *heavy_hitters) {
+        heavy_hitter.second /= growth;
+    }
+
+    // Load control file
+    control_file_load_mutex->lock();
+
+    if (!control_file->isLoaded())
+        control_file->load();
+
+    control_file_load_mutex->unlock();
 
     // Control step
-    for (unsigned int i = 0; i < control_vectors.size(); i++) {
-        std::unordered_map<unsigned long, int>::iterator counter;
-        counter = frequencies.find(control_vectors[i]);
-        if (counter != frequencies.end()) {
+    unsigned long control_size = control_file->size();
+    const char* control_data = control_file->data();
+
+    kmer_start = 0;
+
+    while (kmer_start < control_size) {
+        bool sequence_end = false;
+
+        Sequence encoded_kmer;
+
+        int i = 0;
+        for (; i < length; i++) {
+            int symbol;
+
+            switch (control_data[kmer_start + i]) {
+            case 'A':
+                symbol = 0;
+                break;
+            case 'C':
+                symbol = 1;
+                break;
+            case 'T':
+                symbol = 2;
+                break;
+            case 'G':
+                symbol = 3;
+                break;
+            default:
+                sequence_end = true;
+                break;
+            }
+
+            if (sequence_end)
+                break;
+
+            encoded_kmer.set(i, symbol);
+        }
+
+        if (sequence_end) {
+            kmer_start += i + 1;
+            continue;
+        }
+
+        std::unordered_map<Sequence, int>::iterator counter;
+        counter = heavy_hitters->find(encoded_kmer);
+        if (counter != heavy_hitters->end()) {
             counter->second--;
         }
+
+        kmer_start++;
     }
 
-    // Select only the heavy-hitters not in the control set
-    for (auto i : frequencies) {
-        if (i.second <= 0) {
-            heavy_hitters->erase(heavy_hitters->find(i.first));
-        }
+    // Remove kmers whose frequencies are too low after control step
+    auto next = heavy_hitters->begin();
+    while (next != heavy_hitters->end()) {
+        auto current = next++;
+        if (current->second <= 0)
+            heavy_hitters->erase(current);
     }
 }
 
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cout
+    if (argc < 5) {
+        std::cerr
             << "Usage:" << std::endl
-            << '\t' << argv[0] << " test_set control_set" << std::endl;
+            << '\t' << argv[0]
+            << " test_set control_set min_length max_length threshold_1 ..."
+            << std::endl;
         return 1;
     }
 
+    // Configure sketch settings
+    SketchSettings settings;
+    settings.min_length = atoi(argv[3]);
+    settings.max_length = atoi(argv[4]);
+    settings.n_length = settings.max_length - settings.min_length + 1;
+    settings.growth = 2.0;
+
+    if (argc - 5 < settings.n_length) {
+        std::cerr
+            << "Missing threshold values. Got "
+            << argc - 5
+            << ", expected "
+            << settings.n_length
+            << std::endl;
+        return 1;
+    }
+
+    for (int i = 5; i < argc; i++) {
+        settings.threshold.push_back(atoi(argv[i]));
+    }
+
+    // Generate seeds
+    size_t n_seeds = N_HASH * settings.max_length * 4;
+    unsigned short* seeds = new unsigned short[n_seeds];
+    for (unsigned int i = 0; i < n_seeds; i++) {
+        seeds[i] = rand() & ((1 << HASH_BITS) - 1);
+    }
+
     // Load memory mapped files
-    MappedFile test_file = MappedFile::load(argv[1]);
-    MappedFile control_file = MappedFile::load(argv[2]);
+    std::shared_ptr<MappedFile> test_file =
+        std::make_shared<MappedFile>(argv[1]);
+    std::shared_ptr<MappedFile> control_file =
+        std::make_shared<MappedFile>(argv[2], false);
 
     // Start time measurement
-    auto start = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
 
-    std::unordered_set<unsigned long> heavy_hitters[N_LENGTH];
-    std::thread worker_threads[N_LENGTH];
+    std::vector<std::unordered_map<Sequence, int>> heavy_hitters(
+        settings.n_length);
+    std::mutex control_file_load_mutex;
 
-    for (int n = 0; n < N_LENGTH; n++) {
-        worker_threads[n] = std::thread(
-            hashWorker,
-            &test_file,
-            &control_file,
-            &heavy_hitters[n],
-            MIN_LENGTH + n,
-            THRESHOLD[n]
+    // Spawn threads
+    std::vector<std::thread> threads;
+    threads.reserve(settings.n_length);
+    for (int i = 0; i < settings.n_length; i++) {
+        threads.emplace_back(
+            sketchWorker,
+            seeds,
+            settings.min_length + i,
+            settings.threshold[i],
+            settings.growth,
+            test_file,
+            control_file,
+            &control_file_load_mutex,
+            &heavy_hitters[i]
         );
     }
 
-    for (int n = 0; n < N_LENGTH; n++) {
-        worker_threads[n].join();
+    for (int i = 0; i < settings.n_length; i++) {
+        threads[i].join();
     }
 
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double> diff = end - start;
+    auto end_time = std::chrono::steady_clock::now();
 
-    std::clog << "Execution time: " << diff.count() << " s" << std::endl;
+    // Report times
+    // std::clog
+    //     << "Test time: "
+    //     << std::chrono::duration<double>(test_end_time - start_time).count()
+    //     << " s"
+    //     << std::endl;
+    // std::clog
+    //     << "Control time: "
+    //     << std::chrono::duration<double>(end_time - test_end_time).count()
+    //     << " s"
+    //     << std::endl;
+    std::clog
+        << "Total time: "
+        << std::chrono::duration<double>(end_time - start_time).count()
+        << " s"
+        << std::endl;
 
     // Print heavy-hitters
     int heavy_hitters_count = 0;
 
-    for (int n = 0; n < N_LENGTH; n++) {
+    for (int n = 0; n < settings.n_length; n++) {
         heavy_hitters_count += heavy_hitters[n].size();
         std::clog
-            << "Heavy-hitters (length " << MIN_LENGTH + n << "): "
+            << "Heavy-hitters (length " << settings.min_length + n << "): "
             << heavy_hitters[n].size() << std::endl;
 
-        for (auto x : heavy_hitters[n]) {
-            std::cout << sequenceToString(x, MIN_LENGTH + n) << std::endl;
+        for (auto& x : heavy_hitters[n]) {
+            std::cout
+                << sequenceToString(x.first.data[0], settings.min_length + n)
+                << std::endl;
         }
     }
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
+
+    delete[] seeds;
 
     return 0;
 }
