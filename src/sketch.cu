@@ -261,6 +261,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Get device attributes
+    int cuda_device;
+    gpuErrchk(cudaGetDevice(&cuda_device));
+    int max_threads_per_block;
+    gpuErrchk(cudaDeviceGetAttribute(
+        &max_threads_per_block,
+        cudaDevAttrMaxBlockDimX,
+        cuda_device
+    ));
+
     // Configure sketch settings
     SketchSettings settings;
     settings.min_length = atoi(argv[3]);
@@ -437,7 +447,7 @@ int main(int argc, char* argv[]) {
         float growth = i == 0 ? settings.growth : 1;
 
         int num_blocks = settings.n_length;  // Blocks process a single length
-        int block_size = 2048;
+        int block_size = max_threads_per_block;
         controlStage<<<num_blocks, block_size, 0, stream>>>(
             buffer,
             batch_size,
@@ -510,6 +520,24 @@ int main(int argc, char* argv[]) {
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
 
+    Sketch<int, N_HASH, HASH_BITS>* h_sketches;
+    h_sketches = new Sketch<int, N_HASH, HASH_BITS>[settings.n_length];
+    gpuErrchk(cudaMemcpy(
+        h_sketches,
+        d_sketches,
+        sizeof(Sketch<int, N_HASH, HASH_BITS>) * settings.n_length,
+        cudaMemcpyDeviceToHost
+    ));
+
+    int count = 0;
+    for (int i = 0; i < N_HASH; i++) {
+        for (int j = 0; j < (1 << HASH_BITS); j++) {
+            count += h_sketches[0][i][j];
+        }
+    }
+    delete[] h_sketches;
+
+    std::clog << "Count total: " << count << std::endl;
 
     // Free memory
     cudaFree(d_transfer_area);
