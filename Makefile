@@ -10,8 +10,8 @@ USE_AVX := $(shell grep avx2 /proc/cpuinfo)
 DEBUG ?= 0
 ifeq ($(DEBUG), 1)
 	OUTPUT_DIR = bin/debug
-	FLAGS_CPP += -g -Og
-	FLAGS_CU += -g -O0
+	FLAGS_CPP += -g -Og -DDEBUG
+	FLAGS_CU += -g -O0 -DDEBUG
 else
 	OUTPUT_DIR = bin/release
 	FLAGS_CPP += -O3
