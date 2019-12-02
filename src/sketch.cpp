@@ -80,7 +80,7 @@ int main(int argc, char* argv[]) {
     size_t n_seeds = N_HASH * settings.max_length * 4;
     unsigned short* seeds = new unsigned short[n_seeds];
     for (unsigned int i = 0; i < n_seeds; i++) {
-        seeds[i] = rand() & ((1 << HASH_BITS) - 1);
+        seeds[i] = rand() & ~(~0UL << HASH_BITS);
     }
 
     // Load memory mapped files
@@ -106,9 +106,7 @@ int main(int argc, char* argv[]) {
         unsigned short hashes[N_HASH] = {0};
         Sequence encoded_kmer;
 
-        // Hashing of the first symbols, which don't yet generate a k-mer of
-        // the wanted length
-        for (i = 0; i < settings.min_length - 1; i++) {
+        for (i = 0; i < settings.max_length; i++) {
             int symbol;
 
             switch (test_data[kmer_start + i]) {
@@ -137,42 +135,15 @@ int main(int argc, char* argv[]) {
             for (int j = 0; j < N_HASH; j++) {
                 hashes[j] ^= seeds[4 * N_HASH * i + 4 * j + symbol];
             }
-        }
 
-        if (sequence_end) {
-            kmer_start += i + 1;
-            continue;
-        }
+            if (i < settings.min_length - 1)
+                continue;
 
-        // Hashes for relevant lengths
-        for (; i < settings.max_length; i++) {
-            int symbol;
-
-            switch (test_data[kmer_start + i]) {
-            case 'A':
-                symbol = 0;
-                break;
-            case 'C':
-                symbol = 1;
-                break;
-            case 'T':
-                symbol = 2;
-                break;
-            case 'G':
-                symbol = 3;
-                break;
-            default:
-                sequence_end = true;
-                break;
-            }
-
-            encoded_kmer.set(i, symbol);
 
             // Add to sketch
             unsigned int min_hits = std::numeric_limits<unsigned int>::max();
 
             for (int j = 0; j < N_HASH; j++) {
-                hashes[j] ^= seeds[4 * N_HASH * i + 4 * j + symbol];
                 int counter = sketch[i - settings.min_length + 1][j][hashes[j]];
                 if (counter < min_hits) {
                     min_hits = counter;
@@ -188,6 +159,11 @@ int main(int argc, char* argv[]) {
             if (min_hits + 1 >= settings.threshold[i - settings.min_length + 1]) {
                 heavy_hitters[i - settings.min_length + 1].insert(encoded_kmer);
             }
+        }
+
+        if (sequence_end && i < settings.min_length) {
+            kmer_start += i + 1;
+            continue;
         }
 
         kmer_start++;
@@ -223,7 +199,7 @@ int main(int argc, char* argv[]) {
         int i;
         Sequence encoded_kmer;
 
-        for (i = 0; i < settings.min_length - 1; i++) {
+        for (i = 0; i < settings.max_length; i++) {
             int symbol;
 
             switch (control_data[kmer_start + i]) {
@@ -248,41 +224,20 @@ int main(int argc, char* argv[]) {
                 break;
 
             encoded_kmer.set(i, symbol);
-        }
 
-        if (sequence_end) {
-            kmer_start += i + 1;
-            continue;
-        }
-
-        for (; i < settings.max_length; i++) {
-            int symbol;
-
-            switch (control_data[kmer_start + i]) {
-            case 'A':
-                symbol = 0;
-                break;
-            case 'C':
-                symbol = 1;
-                break;
-            case 'T':
-                symbol = 2;
-                break;
-            case 'G':
-                symbol = 3;
-                break;
-            default:
-                sequence_end = true;
-                break;
-            }
-
-            encoded_kmer.set(i, symbol);
+            if (i < settings.min_length - 1)
+                continue;
 
             std::unordered_map<Sequence, int>::iterator counter;
             counter = frequencies[i - settings.min_length + 1].find(encoded_kmer);
             if (counter != frequencies[i - settings.min_length + 1].end()) {
                 counter->second--;
             }
+        }
+
+        if (sequence_end && i < settings.min_length) {
+            kmer_start += i + 1;
+            continue;
         }
 
         kmer_start++;
