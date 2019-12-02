@@ -65,10 +65,6 @@ __global__ void countmincu(
         Sketch<int32_t, N_HASH, HASH_BITS>* sketches,
         HashTable<HASH_TABLE_BITS>* heavy_hitters
 ) {
-    // A delay is added to prevent threads from updating the same sketch on
-    // concurrent updates
-    // const int32_t delay = threadIdx.x % max_length;
-
     grid_group grid = this_grid();
     thread_block block = this_thread_block();
 
@@ -152,7 +148,7 @@ __global__ void countmincu(
                     }
                 }
 
-                if (min_hits >= d_thresholds[pos - min_length + 1]) {
+                if (min_hits + 1 >= d_thresholds[pos - min_length + 1]) {
                     hashTableInsert<HASH_TABLE_BITS>(
                         &heavy_hitters[pos - min_length + 1],
                         encoded_kmer,
