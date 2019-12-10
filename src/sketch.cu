@@ -21,6 +21,8 @@
 #include "PackedArray.cuh"
 #include "HashTable.cuh"
 
+using namespace cooperative_groups;
+
 const unsigned int MAX_LENGTH = 32;
 
 const unsigned int N_HASH = 4;
@@ -33,8 +35,6 @@ union HashSet {
     uint64_t vec;
     uint16_t val[N_HASH];
 };
-
-using namespace cooperative_groups;
 
 // Seeds
 __constant__ HashSet d_seeds[MAX_LENGTH][4];
@@ -78,9 +78,9 @@ __global__ void countmincu(
 
     // We need to do the same amount of iterations in every thread in order
     // to not miss a grid sync
-    for (int i = 0; i < (data_length + stride - 1) / stride; i++) {
+    for (int n = 0; n < (data_length + stride - 1) / stride; n++) {
         // Start position refers to the start of the sequence
-        const uint32_t start_pos = stride * i + blockDim.x * blockIdx.x + threadIdx.x;
+        const uint32_t start_pos = stride * n + blockDim.x * blockIdx.x + threadIdx.x;
 
         bool sequence_end = false;
 
@@ -93,6 +93,7 @@ __global__ void countmincu(
             int pos = i;
 
             if (start_pos > last_pos || start_pos + pos >= data_length) {
+                block.sync();
                 block.sync();
                 continue;
             }
@@ -119,6 +120,7 @@ __global__ void countmincu(
 
             if (sequence_end) {
                 block.sync();
+                block.sync();
                 continue;
             }
 
@@ -130,13 +132,14 @@ __global__ void countmincu(
             int32_t counters[N_HASH];
             int32_t min_hits;
 
-            if (pos >= min_length - 1) {
+            bool in_range = pos >= min_length - 1;
+
+            if (in_range) {
                 for (int j = 0; j < N_HASH; j++) {
                     counters[j] = sketches[pos - min_length + 1][j][hashes.val[j]];
                 }
 
                 min_hits = counters[0];
-
                 for (int j = 1; j < N_HASH; j++)
                     min_hits = min(min_hits, counters[j]);
 
@@ -148,15 +151,36 @@ __global__ void countmincu(
                     }
                 }
 
-                if (min_hits + 1 >= d_thresholds[pos - min_length + 1]) {
+                block.sync();
+
+                int min_updated_counter = std::numeric_limits<int>::max();
+                for (int j = 0; j < N_HASH; j++) {
+                    if (counters[j] == min_hits) {
+                        min_updated_counter = min(
+                            min_updated_counter,
+                            sketches[pos - min_length + 1][j][hashes.val[j]]
+                        );
+                    }
+                }
+
+                for (int j = 0; j < N_HASH; j++) {
+                    atomicMax(
+                        &sketches[pos - min_length + 1][j][hashes.val[j]],
+                        min_updated_counter
+                    );
+                }
+
+                if (min_updated_counter >= d_thresholds[pos - min_length + 1]) {
                     hashTableInsert<HASH_TABLE_BITS>(
                         &heavy_hitters[pos - min_length + 1],
                         encoded_kmer,
                         min_hits
                     );
                 }
+
             }
             else {
+                block.sync();
                 block.sync();
             }
         }
