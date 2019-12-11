@@ -289,10 +289,14 @@ int main(int argc, char* argv[]) {
     }
 
     // Generate seeds
-    const size_t n_seeds = sizeof(d_seeds) / sizeof(uint16_t);
-    uint16_t h_seeds[sizeof(d_seeds) / sizeof(uint16_t)];
-    for (unsigned int i = 0; i < n_seeds; i++) {
-        h_seeds[i] = rand() & ~(~0UL << HASH_BITS);
+    //const size_t n_seeds = sizeof(d_seeds) / sizeof(uint16_t);
+    HashSet h_seeds[MAX_LENGTH][N_HASH] = {0};
+    for (int i = 0; i < settings.max_length; i++) {
+        for (int j = 0; j < 4; j++) {
+            for (int k = 0; k < N_HASH; k++) {
+                h_seeds[i][j].val[k] = rand() & ~(~0UL << HASH_BITS);
+            }
+        }
     }
     gpuErrchk(cudaMemcpyToSymbol(d_seeds, h_seeds, sizeof(d_seeds)));
     gpuErrchk(cudaDeviceSynchronize());
@@ -409,6 +413,17 @@ int main(int argc, char* argv[]) {
 
     gpuErrchk(cudaDeviceSynchronize());
 
+    // Copy heavy-hitters detected in the test phase to store the real
+    // frequencies
+    HashTable<HASH_TABLE_BITS>* h_frequencies;
+    h_frequencies = new HashTable<HASH_TABLE_BITS>[settings.n_length];
+    cudaMemcpy(
+        h_frequencies,
+        d_heavyhitters,
+        sizeof(HashTable<HASH_TABLE_BITS>) * settings.n_length,
+        cudaMemcpyDeviceToHost
+    );
+
     // Control stage
     i = 0;
     final_chunk = false;
@@ -505,7 +520,10 @@ int main(int argc, char* argv[]) {
                     settings.min_length + n,
                     true
                 )
+                << " "
+                << h_frequencies[n].slots[i].value
                     << std::endl;
+
 
             partial_count++;
             }
@@ -543,6 +561,7 @@ int main(int argc, char* argv[]) {
     cudaFree(d_sketches);
     cudaFree(d_heavyhitters);
     delete[] h_heavyhitters;
+    delete[] h_frequencies;
 
     return 0;
 }

@@ -129,12 +129,10 @@ void countminCu(
             sequence = sequence << 2 | symbol;
 
             // Update hashes
-            if (symbol != 0) {  // Symbol 0 hashes with all zeros so we skip it
-                vec256 seed_vec;
-                seed_vec.v = _mm256_lddqu_si256(
-                    (__m256i*)&seeds[symbol * N_HASH * (settings.max_length + 6) + m * N_HASH]);
-                hash_vec.v = _mm256_xor_si256(hash_vec.v, seed_vec.v);
-            }
+            vec256 seed_vec;
+            seed_vec.v = _mm256_lddqu_si256(
+                (__m256i*)&seeds[symbol * N_HASH * (settings.max_length + 6) + m * N_HASH]);
+            hash_vec.v = _mm256_xor_si256(hash_vec.v, seed_vec.v);
 
             // Add to sketch
             if (m + 1 >= settings.min_length) {
@@ -310,19 +308,13 @@ int main(int argc, char* argv[]) {
     }
 
     // Generate random seeds
-    uint64_t* base_seeds = new uint64_t[N_HASH * settings.max_length * 2];
-    for (int i = 0; i < N_HASH * settings.max_length * 2; i++) {
-        base_seeds[i] = rand() & ~(~0U << HASH_BITS);
-    }
-
-    uint16_t* sym_seeds = new uint16_t[4 * (settings.max_length + 6) * N_HASH];
-    memset(sym_seeds, 0, 4 * (settings.max_length + 6) * N_HASH * sizeof(uint16_t));
+    uint16_t* seeds = new uint16_t[4 * (settings.max_length + 6) * N_HASH];
+    memset(seeds, 0, 4 * (settings.max_length + 6) * N_HASH * sizeof(uint16_t));
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < settings.max_length; j++) {
             for (int k = 0; k < N_HASH; k++) {
-                sym_seeds[(settings.max_length + 6) * N_HASH * i + N_HASH * (j + 3) + k] =
-                    (i & 1 ? base_seeds[k * settings.max_length * 2 + j * 2] : 0) ^
-                    (i & 2 ? base_seeds[k * settings.max_length * 2 + j * 2 + 1] : 0);
+                seeds[(settings.max_length + 6) * N_HASH * i + N_HASH * (j + 3) + k] =
+                    rand() & ~(~0U << HASH_BITS);
             }
         }
     }
@@ -345,7 +337,7 @@ int main(int argc, char* argv[]) {
 
     countminCu(
         settings,
-        sym_seeds,
+        seeds,
         &sketch[0],
         &test_file,
         0,
@@ -354,6 +346,9 @@ int main(int argc, char* argv[]) {
     );
 
     auto test_time = std::chrono::steady_clock::now();
+
+    // Copy frequencies to later use for real frequencies
+    std::vector<std::unordered_map<uint64_t, int>> frequencies = heavy_hitters;
 
     // Scale frequencies by the growth factor
     for (int i = 0; i < settings.n_length; i++) {
@@ -412,18 +407,17 @@ int main(int argc, char* argv[]) {
             << "Heavy-hitters (length " << settings.min_length + n << "): "
             << heavy_hitters[n].size() << std::endl;
 
-        for (auto x : heavy_hitters[n]) {
+        for (auto& x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x.first, settings.min_length + n)
-                << std::endl;
+                << sequenceToString(x.first, settings.min_length + n) << " "
+                << frequencies[n][x.first] << std::endl;
         }
     }
 
     std::clog << "Heavy-hitters (total): " << heavy_hitters_count << std::endl;
 
     // Free allocated memory
-    delete[] base_seeds;
-    delete[] sym_seeds;
+    delete[] seeds;
 
     return 0;
 }
