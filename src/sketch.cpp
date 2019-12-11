@@ -280,9 +280,9 @@ int main(int argc, char* argv[]) {
             << "Heavy-hitters (length " << settings.min_length + n << "): "
             << heavy_hitters[n].size() << std::endl;
 
-        for (auto x : heavy_hitters[n]) {
+        for (auto& x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x.data[0], settings.min_length + n) << std::endl;
+                << sequenceToString(x.data[0], settings.min_length + n, true)
         }
     }
 

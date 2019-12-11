@@ -192,14 +192,14 @@ void countminCu(
                         uint64_t mask;
                         mask = ~(~0UL << ((length[i] + settings.min_length) * 2));
 
-                        heavy_hitters[length[i]][sequence & mask] = min_hits[i].i[0];
+                        heavy_hitters[length[i]][sequence & mask] = min_hits[i].i[0] + 1;
                     }
                 }
             }
         }
 
         // Check if no more sequences fit on the remainder of the line
-        if (m - 4 < settings.min_length) {
+        if (m < settings.max_length + 3 && m - 4 < settings.min_length) {
             n += m + 1;
         }
         else {

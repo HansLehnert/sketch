@@ -313,7 +313,7 @@ int main(int argc, char* argv[]) {
 
         for (auto& x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x.first.data[0], settings.min_length + n)
+                << sequenceToString(x.first.data[0], settings.min_length + n, true)
                 << std::endl;
         }
     }

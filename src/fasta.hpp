@@ -36,6 +36,11 @@ std::vector<unsigned long> parseFasta(
  *
  * @param sequence Binary representation
  * @param length Amount of bases to extract from the binary representation
+ * @param reverse If true, encoded sequence starts from LSB to MSB
  * @return std::string
  */
-std::string sequenceToString(unsigned long sequence, int length);
+std::string sequenceToString(
+    unsigned long sequence,
+    int length,
+    bool reverse = false
+);

@@ -152,7 +152,7 @@ __global__ void countmincu(
                     hashTableInsert<HASH_TABLE_BITS>(
                         &heavy_hitters[pos - min_length + 1],
                         encoded_kmer,
-                        min_hits
+                        min_hits + 1
                     );
                 }
             }
@@ -501,7 +501,10 @@ int main(int argc, char* argv[]) {
 
                 std::cout
                     << sequenceToString(
-                        h_heavyhitters[n].slots[i].key, settings.min_length + n)
+                    h_heavyhitters[n].slots[i].key,
+                    settings.min_length + n,
+                    true
+                )
                     << std::endl;
 
             partial_count++;
