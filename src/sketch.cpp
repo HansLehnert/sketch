@@ -134,7 +134,7 @@ int main(int argc, char* argv[]) {
             encoded_kmer.set(i, symbol);
 
             for (int j = 0; j < N_HASH; j++) {
-                hashes[j] ^= seeds[settings.min_length * N_HASH * symbol + N_HASH * i + j];
+                hashes[j] ^= seeds[settings.max_length * N_HASH * symbol + N_HASH * i + j];
             }
 
             if (i < settings.min_length - 1)
