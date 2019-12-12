@@ -101,7 +101,7 @@ void sketchWorker(
             encoded_kmer.set(i, symbol);
 
             for (int j = 0; j < N_HASH; j++) {
-                hashes[j] ^= seeds[4 * N_HASH * i + 4 * j + symbol];
+                hashes[j] ^= seeds[4 * N_HASH * i + N_HASH * symbol + j];
             }
         }
 
@@ -313,7 +313,7 @@ int main(int argc, char* argv[]) {
 
         for (auto& x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x.first.data[0], settings.min_length + n)
+                << sequenceToString(x.first.data[0], settings.min_length + n, true)
                 << std::endl;
         }
     }

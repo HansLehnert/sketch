@@ -116,23 +116,43 @@ std::vector<unsigned long> parseFasta(
 }
 
 
-std::string sequenceToString(unsigned long sequence, int length) {
+std::string sequenceToString(unsigned long sequence, int length, bool reverse) {
     std::string result = "";
 
-    for (int i = length - 1; i >= 0; i--) {
-        switch ((sequence >> (i * 2)) & 0b11) {
-        case 0:
-            result += 'A';
-            break;
-        case 1:
-            result += 'C';
-            break;
-        case 2:
-            result += 'T';
-            break;
-        case 3:
-            result += 'G';
-            break;
+    if (!reverse) {
+        for (int i = length - 1; i >= 0; i--) {
+            switch ((sequence >> (i * 2)) & 0b11) {
+            case 0:
+                result += 'A';
+                break;
+            case 1:
+                result += 'C';
+                break;
+            case 2:
+                result += 'T';
+                break;
+            case 3:
+                result += 'G';
+                break;
+            }
+        }
+    }
+    else {
+        for (int i = 0; i < length; i++) {
+            switch ((sequence >> (i * 2)) & 0b11) {
+            case 0:
+                result += 'A';
+                break;
+            case 1:
+                result += 'C';
+                break;
+            case 2:
+                result += 'T';
+                break;
+            case 3:
+                result += 'G';
+                break;
+            }
         }
     }
 

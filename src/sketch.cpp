@@ -89,7 +89,8 @@ int main(int argc, char* argv[]) {
     const char* test_data = test_file.data();
     const char* control_data = control_file.data();
 
-    std::vector<std::unordered_set<Sequence>> heavy_hitters(settings.n_length);
+    std::vector<std::unordered_map<Sequence, int>> heavy_hitters(
+        settings.n_length);
 
     // Start time measurement
     auto start_time = std::chrono::steady_clock::now();
@@ -133,7 +134,7 @@ int main(int argc, char* argv[]) {
             encoded_kmer.set(i, symbol);
 
             for (int j = 0; j < N_HASH; j++) {
-                hashes[j] ^= seeds[4 * N_HASH * i + 4 * j + symbol];
+                hashes[j] ^= seeds[4 * N_HASH * i + N_HASH * symbol + j];
             }
 
             if (i < settings.min_length - 1)
@@ -157,7 +158,7 @@ int main(int argc, char* argv[]) {
             }
 
             if (min_hits + 1 >= settings.threshold[i - settings.min_length + 1]) {
-                heavy_hitters[i - settings.min_length + 1].insert(encoded_kmer);
+                heavy_hitters[i - settings.min_length + 1][encoded_kmer] = min_hits + 1;
             }
         }
 
@@ -171,23 +172,13 @@ int main(int argc, char* argv[]) {
 
     auto test_end_time = std::chrono::steady_clock::now();
 
-    // Get frequencies for heavy-hitters
-    std::vector<std::unordered_map<Sequence, int>> frequencies(settings.n_length);
+    // Copy frequencies to later use for real frequencies
+    std::vector<std::unordered_map<Sequence, int>> frequencies = heavy_hitters;
+
+    // Scale frequencies for heavy-hitters
     for (int n = 0; n < settings.n_length; n++) {
-        for (auto& encoded_kmer : heavy_hitters[n]) {
-            frequencies[n][encoded_kmer] = std::numeric_limits<int>::max();
-
-            for (int j = 0; j < N_HASH; j++) {
-                unsigned short hash = 0;
-                for (int i = 0; i < settings.min_length + n; i++)
-                    hash ^= seeds[4 * N_HASH * i + 4 * j + encoded_kmer.get(i)];
-
-                if (sketch[n][j][hash] < frequencies[n][encoded_kmer]) {
-                    frequencies[n][encoded_kmer] = sketch[n][j][hash];
-                }
-            }
-
-            frequencies[n][encoded_kmer] /= GROWTH;
+        for (auto& heavy_hitter : heavy_hitters[n]) {
+            heavy_hitter.second /= GROWTH;
         }
     }
 
@@ -229,8 +220,8 @@ int main(int argc, char* argv[]) {
                 continue;
 
             std::unordered_map<Sequence, int>::iterator counter;
-            counter = frequencies[i - settings.min_length + 1].find(encoded_kmer);
-            if (counter != frequencies[i - settings.min_length + 1].end()) {
+            counter = heavy_hitters[i - settings.min_length + 1].find(encoded_kmer);
+            if (counter != heavy_hitters[i - settings.min_length + 1].end()) {
                 counter->second--;
             }
         }
@@ -245,10 +236,11 @@ int main(int argc, char* argv[]) {
 
     // Select only the heavy-hitters not in the control set
     for (int n = 0; n < settings.n_length; n++) {
-        for (auto i : frequencies[n]) {
-            if (i.second <= 0) {
-                heavy_hitters[n].erase(heavy_hitters[n].find(i.first));
-            }
+        auto next = heavy_hitters[n].begin();
+        while (next != heavy_hitters[n].end()) {
+            auto current = next++;
+            if (current->second <= 0)
+                heavy_hitters[n].erase(current);
         }
     }
 
@@ -280,9 +272,12 @@ int main(int argc, char* argv[]) {
             << "Heavy-hitters (length " << settings.min_length + n << "): "
             << heavy_hitters[n].size() << std::endl;
 
-        for (auto x : heavy_hitters[n]) {
+        for (auto& x : heavy_hitters[n]) {
             std::cout
-                << sequenceToString(x.data[0], settings.min_length + n) << std::endl;
+                << sequenceToString(x.first.data[0], settings.min_length + n, true)
+                << " "
+                << frequencies[n][x.first]
+                << std::endl;
         }
     }
 
