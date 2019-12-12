@@ -417,12 +417,12 @@ int main(int argc, char* argv[]) {
     // frequencies
     HashTable<HASH_TABLE_BITS>* h_frequencies;
     h_frequencies = new HashTable<HASH_TABLE_BITS>[settings.n_length];
-    cudaMemcpy(
+    gpuErrchk(cudaMemcpy(
         h_frequencies,
         d_heavyhitters,
         sizeof(HashTable<HASH_TABLE_BITS>) * settings.n_length,
         cudaMemcpyDeviceToHost
-    );
+    ));
 
     // Control stage
     i = 0;

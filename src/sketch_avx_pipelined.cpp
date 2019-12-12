@@ -310,10 +310,10 @@ int main(int argc, char* argv[]) {
     // Generate random seeds
     uint16_t* seeds = new uint16_t[4 * (settings.max_length + 6) * N_HASH];
     memset(seeds, 0, 4 * (settings.max_length + 6) * N_HASH * sizeof(uint16_t));
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < settings.max_length; j++) {
+    for (int i = 0; i < settings.max_length; i++) {
+        for (int j = 0; j < 4; j++) {
             for (int k = 0; k < N_HASH; k++) {
-                seeds[(settings.max_length + 6) * N_HASH * i + N_HASH * (j + 3) + k] =
+                seeds[(settings.max_length + 6) * N_HASH * j + N_HASH * (i + 3) + k] =
                     rand() & ~(~0U << HASH_BITS);
             }
         }
