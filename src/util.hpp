@@ -13,6 +13,7 @@ union vec128 {
 
 union vec256 {
     __m256i v;
+    __m128i v128[2];
     uint16_t s[16];
     uint32_t i[8];
     uint64_t l[4];

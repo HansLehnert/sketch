@@ -29,15 +29,15 @@ const unsigned int N_HASH = 4;
 
 // Amount of slots that will be used effectively for storing hashes, for
 // alignment purpose
-constexpr unsigned int N_HASH_SLOTS = ceilToPowerOf2(N_HASH);
+constexpr int N_HASH_SLOTS = ceilToPowerOf2(N_HASH);
 static_assert(N_HASH_SLOTS == 4 || N_HASH_SLOTS == 8, "Unsupported value for N_HASH");
 
 // Number of sequences processed in each vector register
-constexpr unsigned int SEQ_PER_VEC = 16 / N_HASH_SLOTS;
+constexpr int SEQ_PER_VEC = 16 / N_HASH_SLOTS;
 // 16 is the number of 2 byte ints that fit in a 256-bit register
 
 // Number of leading and trailing zeros in the seeds arrays
-constexpr unsigned int SEED_PADDING = SEQ_PER_VEC - 1;
+constexpr int SEED_PADDING = SEQ_PER_VEC - 1;
 
 // Number of bits for the hashing seeds. Also determines the sketch size.
 const unsigned int HASH_BITS = 14;
@@ -74,16 +74,10 @@ void countminCu(
         int data_end,
         std::unordered_map<uint64_t, int>* heavy_hitters) {
 
-    vec256 sketch_offset = { .i = {
-        0,
-        1 << HASH_BITS,
-        2 << HASH_BITS,
-        3 << HASH_BITS,
-        4 << HASH_BITS,
-        5 << HASH_BITS,
-        6 << HASH_BITS,
-        7 << HASH_BITS
-    }};
+    vec256 sketch_offset = {0};
+    for (int i = 0; i < N_HASH; i++) {
+        sketch_offset.i[i] = i << HASH_BITS;
+    };
 
     // Adjust start and end positions to line endings
     const char* data = test_file->data();
@@ -110,8 +104,13 @@ void countminCu(
 
         uint64_t sequence = 0;
 
+        // Index of the length being processed
+        int length[SEQ_PER_VEC];
+        for (int i = 0; i < SEQ_PER_VEC; i++)
+            length[i] = i - SEQ_PER_VEC;
+
         int m;
-        for (m = 0; m < settings.max_length + 3; m++) {
+        for (m = 0; m < settings.max_length + SEQ_PER_VEC - 1; m++) {
             uint_fast8_t symbol;
 
             // Convert symbol to binary representation
@@ -145,70 +144,85 @@ void countminCu(
 
             vec256 hash[SEQ_PER_VEC];
             vec256 hits[SEQ_PER_VEC];
-            int length[SEQ_PER_VEC];
             vec256 min_hits[SEQ_PER_VEC];
 
             // Calculate sequence length of each of the parallel hashes
             uint_fast8_t write_flag[SEQ_PER_VEC];
             for (int i = 0; i < SEQ_PER_VEC; i++) {
-                length[i] = m - 2 + i - settings.min_length;
+                length[i]++;
                 write_flag[i] = length[i] >= 0 && length[i] < settings.n_length;
             }
 
             // Find the minimum counts
             for (int i = 0; i < SEQ_PER_VEC; i++) {
-                if (write_flag[i]) {
-                    if constexpr(N_HASH_SLOTS == 4) {
-                        hash[i].lo.v = _mm_unpacklo_epi16(
-                            hash_vec.lo.v, _mm_setzero_si128());
-                        hash[i].lo.v = _mm_or_si128(hash[i].lo.v, sketch_offset.lo.v);
-                        hits[i].lo.v = _mm_i32gather_epi32(
-                            sketch[length[i]].count[0], hash[i].lo.v, 4);
-
-                        if constexpr (N_HASH != N_HASH_SLOTS) {
-                            hits[i].lo.v = _mm_or_si128(hits[i].lo.v, MIN_MASK.lo.v);
-                        }
-
-                        // Compute the minimum counter value
-                        vec128 min_tmp1, min_tmp2;
-                        min_tmp1.v = _mm_shuffle_epi32(hits[i].lo.v, 0b01001110);
-                        min_tmp1.v = _mm_min_epu32(hits[i].lo.v, min_tmp1.v);
-                        min_tmp2.v = _mm_shuffle_epi32(min_tmp1.v, 0b10110001);
-                        min_hits[i].lo.v = _mm_min_epu32(min_tmp1.v, min_tmp2.v);
+                if constexpr(N_HASH_SLOTS == 4) {
+                    if (!write_flag[i]) {
+                        hash_vec.v = _mm256_permute4x64_epi64(hash_vec.v, 0b111001);
+                        continue;
                     }
-                    /* else if constexpr(N_HASH_SLOTS == 8) {
-                        hash[i].v = _mm_unpacklo_epi16(
-                            hash_vec.lo.v, _mm_setzero_si128());
-                        hash[i].lo.v = _mm_or_si128(hash[i].lo.v, sketch_offset.v);
-                        hits[i].lo.v = _mm_i32gather_epi32(
-                            sketch[length[i]].count[0], hash[i].lo.v, 4);
 
-                        if constexpr (N_HASH != N_HASH_SLOTS) {
-                            hits[i].lo.v = _mm_or_si128(hits[i].lo.v, MIN_MASK.lo.v);
-                        }
+                    hash[i].lo.v = _mm_unpacklo_epi16(
+                        hash_vec.lo.v, _mm_setzero_si128());
+                    hash[i].lo.v = _mm_or_si128(hash[i].lo.v, sketch_offset.lo.v);
+                    hits[i].lo.v = _mm_i32gather_epi32(
+                        sketch[length[i]].count[0], hash[i].lo.v, sizeof(int));
 
-                        // Compute the minimum counter value
-                        vec128 min_tmp1, min_tmp2;
-                        min_tmp1.v = _mm_shuffle_epi32(hits[i].lo.v, 0b01001110);
-                        min_tmp1.v = _mm_min_epu32(hits[i].lo.v, min_tmp1.v);
-                        min_tmp2.v = _mm_shuffle_epi32(min_tmp1.v, 0b10110001);
-                        min_hits[i].lo.v = _mm_min_epu32(min_tmp1.v, min_tmp2.v);
-                    }*/
+                    if constexpr (N_HASH != N_HASH_SLOTS) {
+                        hits[i].lo.v = _mm_or_si128(hits[i].lo.v, MIN_MASK.lo.v);
+                    }
+
+                    // Compute the minimum counter value
+                    vec128 min_tmp1, min_tmp2;
+                    min_tmp1.v = _mm_shuffle_epi32(hits[i].lo.v, 0b01001110);
+                    min_tmp1.v = _mm_min_epu32(hits[i].lo.v, min_tmp1.v);
+                    min_tmp2.v = _mm_shuffle_epi32(min_tmp1.v, 0b10110001);
+                    min_hits[i].lo.v = _mm_min_epu32(min_tmp1.v, min_tmp2.v);
+
+                    hash_vec.v = _mm256_permute4x64_epi64(hash_vec.v, 0b111001);
                 }
+                else if constexpr(N_HASH_SLOTS == 8) {
+                    if (!write_flag[i])
+                        continue;
 
-                hash_vec.v = _mm256_permute4x64_epi64(hash_vec.v, 0b111001);
+                    hash[i].v = _mm256_cvtepu16_epi32(hash_vec.v128[i]);
+
+                    hash[i].v = _mm256_or_si256(hash[i].v, sketch_offset.v);
+                    hits[i].v = _mm256_i32gather_epi32(
+                        sketch[length[i]].count[0], hash[i].v, sizeof(int));
+
+                    if constexpr (N_HASH != N_HASH_SLOTS) {
+                        hits[i].v = _mm256_or_si256(hits[i].v, MIN_MASK.v);
+                    }
+
+                    // Compute the minimum counter value
+                    vec256 min_tmp; //1, min_tmp2;
+                    min_tmp.v = _mm256_shuffle_epi32(hits[i].v, 0b10110001);
+                    min_hits[i].v = _mm256_min_epu32(hits[i].v, min_tmp.v);
+                    min_tmp.v = _mm256_shuffle_epi32(min_hits[i].v, 0b01001110);
+                    min_hits[i].v = _mm256_min_epu32(min_hits[i].v, min_tmp.v);
+                    min_tmp.v = _mm256_permute2x128_si256(min_hits[i].v, min_hits[i].v, 1);
+                    min_hits[i].v = _mm256_min_epu32(min_hits[i].v, min_tmp.v);
+                }
             }
 
             // Update the counts
             for (int i = 0; i < SEQ_PER_VEC; i++) {
-                if (write_flag[i]) {
-                    vec128 cmp;
-                    cmp.v = _mm_cmpeq_epi32(hits[i].lo.v, min_hits[i].lo.v);
+                if (!write_flag[i])
+                    continue;
 
-                    for (int j = 0; j < N_HASH; j++) {
-                        if (cmp.i[j]) {
-                            sketch[length[i]].count[0][hash[i].i[j]]++;
-                        }
+                vec256 cmp;
+
+                if constexpr (N_HASH_SLOTS == 4)
+                    cmp.lo.v = _mm_cmpeq_epi32(hits[i].lo.v, min_hits[i].lo.v);
+                else if constexpr (N_HASH_SLOTS == 8)
+                    cmp.v = _mm256_cmpeq_epi32(hits[i].v, min_hits[i].v);
+
+
+                for (int j = 0; j < N_HASH; j++) {
+                    if (cmp.i[j]) {
+                        sketch[length[i]].count[0][hash[i].i[j]]++;
+                        // hashes are indexed to the start of the entire sketch
+                        // rather than to the hash counter array
                     }
                 }
             }
@@ -226,7 +240,6 @@ void countminCu(
             }
         }
 
-        // Check if no more sequences fit on the remainder of the line
         if (m < settings.max_length + SEQ_PER_VEC - 1
             && m - SEQ_PER_VEC < settings.min_length)
         {
